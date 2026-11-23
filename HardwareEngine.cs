@@ -447,6 +447,8 @@ namespace CorePulse
     internal sealed class HardwareEngine : IDisposable
     {
         private readonly object _lock = new object();
+        private readonly object _hwLock = new object();
+        private volatile bool _disposed;
         private readonly Dictionary<string, float> _minMap = new Dictionary<string, float>();
         private readonly Dictionary<string, float> _maxMap = new Dictionary<string, float>();
         private readonly Dictionary<string, FanChannelInfo> _fanMap = new Dictionary<string, FanChannelInfo>();
@@ -723,9 +725,15 @@ namespace CorePulse
                 snap.Fps = f; snap.Fps1Low = f1; snap.FrametimeMs = ft; snap.ActiveGameProcess = gp;
             }
 
-            if (LhmActive && _lhmObj != null)
+            if (_disposed) return Latest ?? new TelemetrySnapshot();
+
+            lock (_hwLock)
             {
-                try { PollLhmIsolated(snap); } catch { }
+                if (_disposed) return Latest ?? new TelemetrySnapshot();
+                if (LhmActive && _lhmObj != null)
+                {
+                    try { PollLhmIsolated(snap); } catch { }
+                }
             }
 
             if (!LhmActive && _cpuFallback != null)
@@ -881,11 +889,17 @@ namespace CorePulse
 
         public void Dispose()
         {
-            try { if (_fps != null) _fps.Dispose(); } catch { }
-            try { if (_cpuFallback != null) _cpuFallback.Dispose(); } catch { }
-            try { if (_lhmObj != null) _lhmObj.Dispose(); } catch { }
-            _lhmObj = null;
-            LhmActive = false;
+            _disposed = true;
+            lock (_hwLock)
+            {
+                try { if (_fps != null) _fps.Dispose(); } catch { }
+                try { if (_cpuFallback != null) _cpuFallback.Dispose(); } catch { }
+                try { if (_lhmObj != null) _lhmObj.Dispose(); } catch { }
+                _fps = null;
+                _cpuFallback = null;
+                _lhmObj = null;
+                LhmActive = false;
+            }
         }
     }
 }

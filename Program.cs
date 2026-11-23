@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("CorePulse — Hardware Monitor, Fan Controller & Gaming HUD")]
 [assembly: AssemblyDescription("Lightweight native Windows 10/11 hardware telemetry, PWM fan curve controller with thermal safety override, zero-injection DXGI/D3D9 ETW FPS counter, System Tray support, and 32-bit per-pixel alpha Always-On-Top Gaming HUD (EN/TR/zh-CN).")]
 [assembly: AssemblyProduct("CorePulse")]
-[assembly: AssemblyVersion("1.1.1.0")]
-[assembly: AssemblyFileVersion("1.1.1.0")]
+[assembly: AssemblyVersion("1.1.2.0")]
+[assembly: AssemblyFileVersion("1.1.2.0")]
 
 namespace CorePulse
 {
@@ -306,18 +306,22 @@ namespace CorePulse
             float y = -_scrollY;
             TelemetrySnapshot s = Snap ?? new TelemetrySnapshot();
 
-            // Helpful banner if Admin or PawnIO is needed for full CPU/Board/Fan sensors
-            if (!s.IsAdmin || !s.PawnIoInstalled)
+            // Helpful banner if lib\ folder is missing, or Admin / PawnIO is needed for full CPU/Board/Fan sensors
+            if (!s.LhmLoaded || !s.IsAdmin || !s.PawnIoInstalled)
             {
                 RectangleF ban = new RectangleF(0, y, availW, Sf(40f));
                 DrawBox(g, ban, Sf(9f), ColAmberBg, ColAmberBd);
-                string msg = !s.PawnIoInstalled
-                    ? T("Signed PawnIO driver not detected — install official PawnIO + Run as Admin to unlock CPU/Motherboard temps & PWM Fan Control.",
-                        "İmzalı PawnIO sürücüsü bulunamadı — CPU/Anakart ısısı ve Fan Kontrolü için resmi PawnIO kurup Yönetici olarak açın.",
-                        "未检测到签名 PawnIO 驱动 — 安装官方 PawnIO 并以管理员运行即可解锁 CPU/主板温度与 PWM 风扇控制。")
-                    : T("Standard Mode — GPU & RAM active. Click 'Admin ↗' to unlock CPU Package Temp, Motherboard VRM/Fans & Zero-Injection ETW FPS.",
-                        "Standart Mod — GPU ve RAM aktif. CPU Isısı, Anakart Fan Kontrolü ve ETW FPS için 'Yönetici ↗' tıklayın.",
-                        "标准模式 — 已读取 GPU 与内存；点击「管理员 ↗」即可解锁 CPU/主板温度、风扇控制与无注入 ETW FPS。");
+                string msg = !s.LhmLoaded
+                    ? T("Native Fallback Mode — keep the 'lib\\' folder next to CorePulse.exe to enable full CPU/GPU/Motherboard & Fan sensors.",
+                        "Yerli Yedek Mod — tam CPU/GPU/Anakart ve Fan sensörleri için 'lib\\' klasörünü CorePulse.exe ile aynı klasörde tutun.",
+                        "原生降级模式 — 请将 lib\\ 文件夹与 CorePulse.exe 放在同一目录，以启用完整 CPU/主板/风扇传感器。")
+                    : (!s.PawnIoInstalled
+                        ? T("Signed PawnIO driver not detected — install official PawnIO + Run as Admin to unlock CPU/Motherboard temps & PWM Fan Control.",
+                            "İmzalı PawnIO sürücüsü bulunamadı — CPU/Anakart ısısı ve Fan Kontrolü için resmi PawnIO kurup Yönetici olarak açın.",
+                            "未检测到签名 PawnIO 驱动 — 安装官方 PawnIO 并以管理员运行即可解锁 CPU/主板温度与 PWM 风扇控制。")
+                        : T("Standard Mode — GPU & RAM active. Click 'Admin ↗' to unlock CPU Package Temp, Motherboard VRM/Fans & Zero-Injection ETW FPS.",
+                            "Standart Mod — GPU ve RAM aktif. CPU Isısı, Anakart Fan Kontrolü ve ETW FPS için 'Yönetici ↗' tıklayın.",
+                            "标准模式 — 已读取 GPU 与内存；点击「管理员 ↗」即可解锁 CPU/主板温度、风扇控制与无注入 ETW FPS。"));
                 DrawText(g, msg, _fSub, ColAmber, new RectangleF(ban.X + Sf(12f), ban.Y, ban.Width - Sf(250f), ban.Height), StringAlignment.Near);
 
                 float bx = ban.Right - Sf(116f);
@@ -328,7 +332,7 @@ namespace CorePulse
                     AddZone(bAdm, "elevate", null);
                     bx -= Sf(124f);
                 }
-                if (!s.PawnIoInstalled)
+                if (s.LhmLoaded && !s.PawnIoInstalled)
                 {
                     RectangleF bPwn = new RectangleF(bx, ban.Y + Sf(7f), Sf(118f), Sf(26f));
                     DrawPillBtn(g, bPwn, T("Get PawnIO ↗", "PawnIO İndir ↗", "下载 PawnIO ↗"), IsHov("open_pawnio", null), false, true);
@@ -1140,6 +1144,8 @@ namespace CorePulse
         private int _activeTab;
         private string _hoverKey = "";
         private volatile bool _polling;
+        private volatile bool _shuttingDown;
+        private readonly ManualResetEvent _pollIdle = new ManualResetEvent(true);
         private bool _hotkeyRegistered;
         private bool _forceExit;
         private bool _initialHideDone;
@@ -1394,7 +1400,13 @@ namespace CorePulse
             if (m.Msg == WinNative.WM_DPICHANGED)
             {
                 int nd = (int)(m.WParam.ToInt64() & 0xFFFF);
-                if (nd >= 72) { UpdateDpiScale(nd); Invalidate(); }
+                if (nd >= 72)
+                {
+                    UpdateDpiScale(nd);
+                    if (_settings.OverlayEnabled && _hud != null && !_hud.IsDisposed)
+                        _hud.UpdateHud(_settings, _engine.Latest, _scale);
+                    Invalidate();
+                }
             }
             else if (m.Msg == WinNative.WM_HOTKEY && m.WParam.ToInt32() == WinNative.HOTKEY_TOGGLE_HUD)
             {
@@ -1450,18 +1462,22 @@ namespace CorePulse
 
         private void OnPollTick(object sender, EventArgs e)
         {
-            if (_polling || IsDisposed) return;
+            if (_polling || _shuttingDown || IsDisposed) return;
             _polling = true;
+            _pollIdle.Reset();
             ThreadPool.QueueUserWorkItem(delegate
             {
                 try
                 {
+                    if (_shuttingDown) return;
                     TelemetrySnapshot snap = _engine.PollOnce();
+                    if (_shuttingDown) return;
                     _fanCtrl.Tick(_settings, snap, false);
-                    if (!IsDisposed && IsHandleCreated)
+                    if (!_shuttingDown && !IsDisposed && IsHandleCreated)
                     {
                         BeginInvoke((MethodInvoker)delegate
                         {
+                            if (_shuttingDown || IsDisposed) return;
                             _content.Snap = snap;
                             if (Visible) _content.Invalidate();
                             if (_settings.OverlayEnabled)
@@ -1472,7 +1488,11 @@ namespace CorePulse
                     }
                 }
                 catch { }
-                finally { _polling = false; }
+                finally
+                {
+                    _polling = false;
+                    try { _pollIdle.Set(); } catch { }
+                }
             });
         }
 
@@ -1837,7 +1857,10 @@ namespace CorePulse
                 Hide();
                 return;
             }
+            _shuttingDown = true;
             if (_pollTimer != null) { _pollTimer.Stop(); _pollTimer.Dispose(); }
+            try { _pollIdle.WaitOne(1200); } catch { }
+            try { _pollIdle.Close(); } catch { }
             if (!_cfg.DemoMode)
             {
                 try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }

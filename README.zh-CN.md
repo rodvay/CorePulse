@@ -10,14 +10,14 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/系统支持-Windows%2010%20%2F%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows 10 / 11" />
-  <img src="https://img.shields.io/badge/主程序-130.5%20KB%20原生%20x64-34D399?style=for-the-badge" alt="130.5 KB 原生 x64 EXE" />
+  <img src="https://img.shields.io/badge/主程序-131.5%20KB%20原生%20x64-34D399?style=for-the-badge" alt="131.5 KB 原生 x64 EXE" />
   <img src="https://img.shields.io/badge/界面语言-简体中文%20%7C%20EN%20%7C%20TR-38BDF8?style=for-the-badge" alt="简体中文 英语 土耳其语" />
   <img src="https://img.shields.io/badge/开源协议-MIT-F59E0B?style=for-the-badge" alt="MIT 开源协议" />
   <a href="https://linux.do"><img src="https://img.shields.io/badge/开源社区-LINUX%20DO-1C1C1E?style=for-the-badge&logo=linux&logoColor=38BDF8" alt="LINUX DO 社区" /></a>
 </p>
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> &nbsp;·&nbsp; <b>简体中文</b> &nbsp;·&nbsp; <a href="README.md#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>下载便携版 (v1.1.1)</b></a>
+  <a href="README.md"><b>English</b></a> &nbsp;·&nbsp; <b>简体中文</b> &nbsp;·&nbsp; <a href="README.md#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>下载便携版 (v1.1.2)</b></a>
 </p>
 
 ---
@@ -67,7 +67,7 @@
 
 ## 下载与使用说明
 
-1. 前往 **[Releases 发布页](https://github.com/rodvay/CorePulse/releases/latest)** 下载 **`CorePulse-v1.1.1-Portable.zip`**，解压后直接运行 **`CorePulse.exe`**。
+1. 前往 **[Releases 发布页](https://github.com/rodvay/CorePulse/releases/latest)** 下载 **`CorePulse-v1.1.2-Portable.zip`**，解压后直接运行 **`CorePulse.exe`**。
 2. **解锁完整 CPU/主板温度、PWM 风扇控制与 ETW 帧率：** 安装微软签名版 **[PawnIO 驱动](https://github.com/namazso/PawnIO.Setup/releases/latest)**（软件内已提供一键跳转入口）并点击右上角 **管理员 ↗** 运行即可。
 3. **自行编译源码**（仅需 Windows 10/11 自带 `.NET Framework 4.x` 编译器，`build.bat` 会自动拉取官方 LHM v0.9.6 依赖）：
 

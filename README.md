@@ -10,14 +10,14 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows 10 / 11" />
-  <img src="https://img.shields.io/badge/Core%20EXE-130.5%20KB%20Native%20x64-34D399?style=for-the-badge" alt="130.5 KB Native x64 EXE" />
+  <img src="https://img.shields.io/badge/Core%20EXE-131.5%20KB%20Native%20x64-34D399?style=for-the-badge" alt="131.5 KB Native x64 EXE" />
   <img src="https://img.shields.io/badge/UI%20Languages-EN%20%7C%20TR%20%7C%20%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-38BDF8?style=for-the-badge" alt="EN TR zh-CN" />
   <img src="https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge" alt="MIT License" />
   <a href="https://linux.do"><img src="https://img.shields.io/badge/Community-LINUX%20DO-1C1C1E?style=for-the-badge&logo=linux&logoColor=38BDF8" alt="LINUX DO Community" /></a>
 </p>
 
 <p align="center">
-  <b>English</b> &nbsp;·&nbsp; <a href="README.zh-CN.md"><b>简体中文</b></a> &nbsp;·&nbsp; <a href="#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>Download Portable ZIP (v1.1.1)</b></a>
+  <b>English</b> &nbsp;·&nbsp; <a href="README.zh-CN.md"><b>简体中文</b></a> &nbsp;·&nbsp; <a href="#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>Download Portable ZIP (v1.1.2)</b></a>
 </p>
 
 ---
@@ -78,7 +78,7 @@
 
 ## Quick Start & Driver Note
 
-1. Download **`CorePulse-v1.1.1-Portable.zip`** from **[Releases](https://github.com/rodvay/CorePulse/releases/latest)**, extract it, and run **`CorePulse.exe`**.
+1. Download **`CorePulse-v1.1.2-Portable.zip`** from **[Releases](https://github.com/rodvay/CorePulse/releases/latest)**, extract it, and run **`CorePulse.exe`**.
 2. **For full CPU Package Temp, Motherboard VRM/Case Fan Control & ETW FPS:**
    - Install the official WHQL-signed **[PawnIO Driver](https://github.com/namazso/PawnIO.Setup/releases/latest)** (the modern signed replacement for legacy `WinRing0`, also linked directly inside CorePulse) and click **Admin ↗** in the top bar.
    - Even without Admin/PawnIO — or even if `CorePulse.exe` is run standalone without `lib\` — CorePulse launches cleanly with zero crashes and degrades gracefully to native telemetry.
@@ -104,7 +104,7 @@ build.bat
 
 - **4 Sekme:** **Özet** (harici GPU öncelikli ve gerçek 64-bit Dedicated VRAM destekli CPU/GPU/RAM/FPS kartları + 60 sn canlı sıcaklık grafiği), **Sensörler** (Anlık/Min/Maks tam liste), **Fan Kontrol** (BIOS Otomatik / Sessiz / Dengeli / Turbo, etkileşimli 5 noktalı fan eğrisi, açılışta kayıtlı profili otomatik yükleme, ≥88°C otomatik %100 termal koruma ve çıkışta BIOS'a dönüş) ve **Üstte Göster (HUD)** (çoklu monitör hedef ekran seçimi, 6 ekran köşesi, Yatay Bar veya Dikey Kart, Tepsiye Küçültme & Windows ile Başlatma, 14 ayrı sensör kutucuğu, küresel kısayol `Ctrl+Shift+O`).
 - **Otomatik 3 Dil:** Türkçe Windows'ta Türkçe, Çince Windows'ta Basitleştirilmiş Çince, diğer dillerde İngilizce açılır (`TR | EN | 中文`).
-- **İndirme:** **[Releases](https://github.com/rodvay/CorePulse/releases/latest)** sayfasından `CorePulse-v1.1.1-Portable.zip` dosyasını indirip klasöre çıkartarak `CorePulse.exe` dosyasını çalıştırabilirsiniz.
+- **İndirme:** **[Releases](https://github.com/rodvay/CorePulse/releases/latest)** sayfasından `CorePulse-v1.1.2-Portable.zip` dosyasını indirip klasöre çıkartarak `CorePulse.exe` dosyasını çalıştırabilirsiniz.
 
 > 简体中文完整文档请查看 **[README.zh-CN.md](README.zh-CN.md)**。
 
