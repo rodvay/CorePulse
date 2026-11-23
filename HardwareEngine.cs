@@ -621,6 +621,19 @@ namespace CorePulse
             catch { }
         }
 
+        internal static ulong ParseRegistryMemoryBytes(object raw)
+        {
+            if (raw == null) return 0;
+            byte[] buf = raw as byte[];
+            if (buf != null)
+            {
+                if (buf.Length >= 8) return BitConverter.ToUInt64(buf, 0);
+                if (buf.Length >= 4) return BitConverter.ToUInt32(buf, 0);
+                return 0;
+            }
+            try { return Convert.ToUInt64(raw); } catch { return 0; }
+        }
+
         private static void ReadPrimaryGpuFromRegistry(out string bestName, out float bestVramGb)
         {
             bestName = "";
@@ -628,7 +641,7 @@ namespace CorePulse
             int bestScore = -1;
             try
             {
-                using (RegistryKey cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", false))
+                using (RegistryKey cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", false))
                 {
                     if (cls == null) return;
                     foreach (string sub in cls.GetSubKeyNames())
@@ -645,12 +658,9 @@ namespace CorePulse
                                 if (low.Contains("microsoft basic") || low.Contains("virtual") || low.Contains("parsec")) continue;
 
                                 float gb = -1f;
-                                object qw = k.GetValue("HardwareInformation.qwMemorySize");
-                                if (qw != null)
-                                {
-                                    ulong bytes = Convert.ToUInt64(qw);
-                                    if (bytes > 0) gb = (float)(bytes / (1024.0 * 1024.0 * 1024.0));
-                                }
+                                ulong bytes = ParseRegistryMemoryBytes(k.GetValue("HardwareInformation.qwMemorySize"));
+                                if (bytes == 0) bytes = ParseRegistryMemoryBytes(k.GetValue("HardwareInformation.MemorySize"));
+                                if (bytes > 0) gb = (float)(bytes / (1024.0 * 1024.0 * 1024.0));
 
                                 bool isInteg = low.Contains("uhd graphics") || low.Contains("iris") || low.Contains("radeon(tm) graphics");
                                 int score = (isInteg ? 20 : 100) + (int)Math.Min(50, Math.Max(0, gb * 2f));

@@ -108,7 +108,7 @@ Write-Host "Compiling CorePulse.exe..."
     /nologo `
     /target:winexe `
     /optimize+ `
-    /platform:anycpu `
+    /platform:x64 `
     /codepage:65001 `
     /utf8output `
     /win32icon:"$scriptDir\app.ico" `

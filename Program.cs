@@ -6,12 +6,13 @@ using System.Drawing.Text;
 using System.Reflection;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 [assembly: AssemblyTitle("CorePulse — Hardware Monitor, Fan Controller & Gaming HUD")]
 [assembly: AssemblyDescription("Lightweight native Windows 10/11 hardware telemetry, PWM fan curve controller with thermal safety override, zero-injection DXGI/D3D9 ETW FPS counter, System Tray support, and 32-bit per-pixel alpha Always-On-Top Gaming HUD (EN/TR/zh-CN).")]
 [assembly: AssemblyProduct("CorePulse")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 namespace CorePulse
 {
@@ -22,6 +23,7 @@ namespace CorePulse
         public int InitialTab;
         public bool ShowDemoOverlay;
         public bool StartMinimized;
+        public bool Handoff;
 
         public static LaunchConfig Parse(string[] args)
         {
@@ -33,6 +35,7 @@ namespace CorePulse
                 if (a == "--demo") c.DemoMode = true;
                 else if (a == "--hud") c.ShowDemoOverlay = true;
                 else if (a == "--minimized" || a == "--tray") c.StartMinimized = true;
+                else if (a == "--handoff") c.Handoff = true;
                 else if (a == "--lang" && i + 1 < args.Length)
                 {
                     string l = (args[++i] ?? "").Trim().ToLowerInvariant();
@@ -1191,7 +1194,12 @@ namespace CorePulse
             _content.ActionInvoked += OnContentAction;
             Controls.Add(_content);
 
-            if (!_cfg.DemoMode) InitTrayIcon();
+            if (!_cfg.DemoMode)
+            {
+                InitTrayIcon();
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            }
 
             UpdateWindowTitle();
             UpdateDpiScale(GetInitialDpi());
@@ -1296,7 +1304,40 @@ namespace CorePulse
         {
             Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            bool wasTop = TopMost;
+            TopMost = true;
+            TopMost = wasTop;
             Activate();
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume || IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    // BIOS resets SuperIO/GPU PWM registers on Sleep/Resume -> re-apply active curves immediately!
+                    _fanCtrl.InvalidateCache();
+                    _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
+                    if (_settings.OverlayEnabled) _hud.UpdateHud(_settings, _engine.Latest, _scale);
+                });
+            }
+            catch { }
+        }
+
+        private void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (_settings.OverlayEnabled) _hud.UpdateHud(_settings, _engine.Latest, _scale);
+                    if (Visible) { _content.Invalidate(); Invalidate(); }
+                });
+            }
+            catch { }
         }
 
         protected override void OnShown(EventArgs e)
@@ -1338,12 +1379,18 @@ namespace CorePulse
 
             if (!_cfg.DemoMode)
             {
+                WinNative.AllowWakeMessageFromLowerIntegrity(Handle);
                 _hotkeyRegistered = WinNative.RegisterHotKey(Handle, WinNative.HOTKEY_TOGGLE_HUD, WinNative.MOD_CONTROL | WinNative.MOD_SHIFT, WinNative.VK_O);
             }
         }
 
         protected override void WndProc(ref Message m)
         {
+            if (WinNative.WM_COREPULSE_SHOW != 0 && (uint)m.Msg == WinNative.WM_COREPULSE_SHOW)
+            {
+                RestoreFromTray();
+                return;
+            }
             if (m.Msg == WinNative.WM_DPICHANGED)
             {
                 int nd = (int)(m.WParam.ToInt64() & 0xFFFF);
@@ -1483,7 +1530,7 @@ namespace CorePulse
         {
             if (key == "elevate")
             {
-                if (!_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) { _forceExit = true; Close(); }
+                if (!_cfg.DemoMode && WinNative.RestartAsAdministrator("--handoff --tab " + _activeTab)) { _forceExit = true; Close(); }
             }
             else if (key == "open_pawnio")
             {
@@ -1512,6 +1559,7 @@ namespace CorePulse
                 int idx = (int)payload;
                 _settings.CurveDuties[idx] = FanController.ClampDuty(_settings.CurveDuties[idx] + 5);
                 _settings.FanProfile = FanProfileMode.Custom;
+                _fanCtrl.InvalidateCache();
                 _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
                 if (!_cfg.DemoMode) _settings.Save();
                 RebuildTrayMenu();
@@ -1522,6 +1570,7 @@ namespace CorePulse
                 int idx = (int)payload;
                 _settings.CurveDuties[idx] = FanController.ClampDuty(_settings.CurveDuties[idx] - 5);
                 _settings.FanProfile = FanProfileMode.Custom;
+                _fanCtrl.InvalidateCache();
                 _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
                 if (!_cfg.DemoMode) _settings.Save();
                 RebuildTrayMenu();
@@ -1634,7 +1683,7 @@ namespace CorePulse
                     else if (k == "tab_2") SwitchTab(2);
                     else if (k == "tab_3") SwitchTab(3);
                     else if (k == "top_hud") ToggleOverlay();
-                    else if (k == "elevate") { if (!_engine.Latest.IsAdmin && !_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) { _forceExit = true; Close(); } }
+                    else if (k == "elevate") { if (!_engine.Latest.IsAdmin && !_cfg.DemoMode && WinNative.RestartAsAdministrator("--handoff --tab " + _activeTab)) { _forceExit = true; Close(); } }
                     break;
                 }
             }
@@ -1789,6 +1838,11 @@ namespace CorePulse
                 return;
             }
             if (_pollTimer != null) { _pollTimer.Stop(); _pollTimer.Dispose(); }
+            if (!_cfg.DemoMode)
+            {
+                try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
+                try { SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged; } catch { }
+            }
             if (_trayIcon != null) { try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { } _trayIcon = null; }
             if (_trayMenu != null) { try { _trayMenu.Dispose(); } catch { } _trayMenu = null; }
             if (_hotkeyRegistered && IsHandleCreated) WinNative.UnregisterHotKey(Handle, WinNative.HOTKEY_TOGGLE_HUD);
@@ -1807,10 +1861,48 @@ namespace CorePulse
         private static void Main(string[] args)
         {
             LibResolver.Install();
-            WinNative.EnableDpiAwareness();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm(LaunchConfig.Parse(args)));
+            LaunchConfig cfg = LaunchConfig.Parse(args);
+
+            Mutex singleMutex = null;
+            bool ownsMutex = false;
+            if (!cfg.DemoMode)
+            {
+                bool createdNew;
+                singleMutex = new Mutex(true, "Local\\CorePulse_SingleInstance_v1", out createdNew);
+                ownsMutex = createdNew;
+                if (!createdNew)
+                {
+                    if (cfg.Handoff)
+                    {
+                        try { ownsMutex = singleMutex.WaitOne(4000); }
+                        catch (AbandonedMutexException) { ownsMutex = true; }
+                    }
+                    if (!ownsMutex)
+                    {
+                        // Wake existing running instance (even if minimized in tray or running as Admin!)
+                        if (WinNative.WM_COREPULSE_SHOW != 0)
+                            WinNative.PostMessage(WinNative.HWND_BROADCAST, WinNative.WM_COREPULSE_SHOW, IntPtr.Zero, IntPtr.Zero);
+                        singleMutex.Dispose();
+                        return;
+                    }
+                }
+            }
+
+            try
+            {
+                WinNative.EnableDpiAwareness();
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new MainForm(cfg));
+            }
+            finally
+            {
+                if (singleMutex != null)
+                {
+                    if (ownsMutex) { try { singleMutex.ReleaseMutex(); } catch { } }
+                    singleMutex.Dispose();
+                }
+            }
         }
     }
 }

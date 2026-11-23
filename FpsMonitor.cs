@@ -216,7 +216,48 @@ namespace CorePulse
         private readonly object _lock = new object();
         private readonly uint _ownPid;
         private readonly Dictionary<uint, Queue<double>> _pidPresentQpcMs = new Dictionary<uint, Queue<double>>();
+        private readonly Dictionary<uint, string> _pidNameCache = new Dictionary<uint, string>();
         private readonly double _qpcToMs;
+
+        private static readonly HashSet<string> IgnoredShellProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "dwm", "explorer", "shellexperiencehost", "startmenuexperiencehost",
+            "searchhost", "searchapp", "textinputhost", "lockapp", "applicationframehost",
+            "systemsettings", "taskmgr", "corepulse", "gamebar", "widgets",
+            "widgetservice", "snippingtool", "screenclippinghost", "nvcontainer",
+            "nvidia overlay", "nvidia share", "radeonsoftware", "amdrsserv"
+        };
+
+        internal static bool IsIgnoredSystemProcess(string procBaseName)
+        {
+            if (string.IsNullOrEmpty(procBaseName)) return false;
+            string n = procBaseName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? procBaseName.Substring(0, procBaseName.Length - 4)
+                : procBaseName;
+            return IgnoredShellProcs.Contains(n);
+        }
+
+        private string ResolveProcessBaseName(uint pid)
+        {
+            string cached;
+            lock (_lock)
+            {
+                if (_pidNameCache.TryGetValue(pid, out cached)) return cached;
+            }
+            string name = "";
+            try
+            {
+                using (Process p = Process.GetProcessById((int)pid))
+                    name = p.ProcessName ?? "";
+            }
+            catch { }
+            lock (_lock)
+            {
+                if (_pidNameCache.Count > 64) _pidNameCache.Clear();
+                _pidNameCache[pid] = name;
+            }
+            return name;
+        }
 
         private ulong _sessionHandle;
         private ulong _traceHandle;
@@ -430,6 +471,7 @@ namespace CorePulse
             uint fgPid = WinNative.GetForegroundPid();
             uint chosenPid = 0;
             double[] stamps = null;
+            List<KeyValuePair<uint, double[]>> candidates = new List<KeyValuePair<uint, double[]>>();
 
             lock (_lock)
             {
@@ -437,22 +479,48 @@ namespace CorePulse
                 {
                     Queue<double> q = _pidPresentQpcMs[fgPid];
                     while (q.Count > 0 && nowMs - q.Peek() > 2500.0) q.Dequeue();
-                    if (q.Count >= 4) { chosenPid = fgPid; stamps = q.ToArray(); }
+                    if (q.Count >= 4) candidates.Add(new KeyValuePair<uint, double[]>(fgPid, q.ToArray()));
                 }
 
-                if (stamps == null)
+                foreach (KeyValuePair<uint, Queue<double>> kv in _pidPresentQpcMs)
                 {
-                    int bestCount = 3;
-                    foreach (KeyValuePair<uint, Queue<double>> kv in _pidPresentQpcMs)
+                    if (kv.Key == fgPid) continue;
+                    while (kv.Value.Count > 0 && nowMs - kv.Value.Peek() > 2500.0) kv.Value.Dequeue();
+                    if (kv.Value.Count >= 8)
+                        candidates.Add(new KeyValuePair<uint, double[]>(kv.Key, kv.Value.ToArray()));
+                }
+            }
+
+            string chosenName = "";
+            // Priority 1: Active foreground app (if not a Windows desktop shell compositor!)
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (candidates[i].Key == fgPid)
+                {
+                    string baseName = ResolveProcessBaseName(fgPid);
+                    if (!IsIgnoredSystemProcess(baseName))
                     {
-                        while (kv.Value.Count > 0 && nowMs - kv.Value.Peek() > 2500.0) kv.Value.Dequeue();
-                        if (kv.Value.Count > bestCount)
-                        {
-                            bestCount = kv.Value.Count;
-                            chosenPid = kv.Key;
-                            stamps = kv.Value.ToArray();
-                        }
+                        chosenPid = fgPid;
+                        stamps = candidates[i].Value;
+                        chosenName = baseName;
                     }
+                    break;
+                }
+            }
+
+            // Priority 2: Highest-activity non-shell 3D app (e.g. game on 2nd monitor or user checking CorePulse dashboard)
+            if (stamps == null)
+            {
+                int bestCount = 7;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (candidates[i].Value.Length <= bestCount) continue;
+                    string baseName = ResolveProcessBaseName(candidates[i].Key);
+                    if (IsIgnoredSystemProcess(baseName)) continue;
+                    bestCount = candidates[i].Value.Length;
+                    chosenPid = candidates[i].Key;
+                    stamps = candidates[i].Value;
+                    chosenName = baseName;
                 }
             }
 
@@ -460,12 +528,7 @@ namespace CorePulse
             ComputeFpsStats(stamps, nowMs, out fps, out fps1Low, out frametimeMs);
             if (fps <= 0.5f) return;
 
-            try
-            {
-                using (Process p = Process.GetProcessById((int)chosenPid))
-                    procName = p.ProcessName + ".exe";
-            }
-            catch { procName = "PID " + chosenPid; }
+            procName = !string.IsNullOrEmpty(chosenName) ? (chosenName + ".exe") : ("PID " + chosenPid);
         }
 
         private static void StopStaleSession()

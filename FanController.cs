@@ -102,6 +102,12 @@ namespace CorePulse
             _lastAppliedDuty.Clear();
         }
 
+        public void InvalidateCache()
+        {
+            _lastAppliedTemp.Clear();
+            _lastAppliedDuty.Clear();
+        }
+
         public void Tick(CorePulseSettings cfg, TelemetrySnapshot snap, bool demoMode)
         {
             if (snap == null || snap.Fans == null || snap.Fans.Count == 0)

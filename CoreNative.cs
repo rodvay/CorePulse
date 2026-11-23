@@ -261,12 +261,15 @@ namespace CorePulse
         public const int WS_EX_NOACTIVATE = 0x08000000;
 
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xFFFF);
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_NOMOVE = 0x0002;
         public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint MSGFLT_ALLOW = 1;
         public const int ULW_ALPHA = 0x00000002;
         public const byte AC_SRC_OVER = 0x00;
         public const byte AC_SRC_ALPHA = 0x01;
+        public static readonly uint WM_COREPULSE_SHOW = RegisterWindowMessage("CorePulse_ShowExistingWindow_v1");
 
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
@@ -330,6 +333,27 @@ namespace CorePulse
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint msg, uint action, IntPtr changeInfo);
+
+        public static void AllowWakeMessageFromLowerIntegrity(IntPtr hwnd)
+        {
+            try
+            {
+                if (hwnd != IntPtr.Zero && WM_COREPULSE_SHOW != 0)
+                    ChangeWindowMessageFilterEx(hwnd, WM_COREPULSE_SHOW, MSGFLT_ALLOW, IntPtr.Zero);
+            }
+            catch { }
+        }
 
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
