@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("CorePulse — Hardware Monitor, Fan Controller & Gaming HUD")]
 [assembly: AssemblyDescription("Lightweight native Windows 10/11 hardware telemetry, PWM fan curve controller with thermal safety override, zero-injection DXGI/D3D9 ETW FPS counter, System Tray support, and 32-bit per-pixel alpha Always-On-Top Gaming HUD (EN/TR/zh-CN).")]
 [assembly: AssemblyProduct("CorePulse")]
-[assembly: AssemblyVersion("1.1.2.0")]
-[assembly: AssemblyFileVersion("1.1.2.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace CorePulse
 {
@@ -112,6 +112,7 @@ namespace CorePulse
         public TelemetrySnapshot Snap = new TelemetrySnapshot();
         public string SensorFilter = "ALL";
         public bool DemoMode;
+        public bool HudDragUnlocked;
 
         public event Action<string, object> ActionInvoked;
 
@@ -820,19 +821,19 @@ namespace CorePulse
             AddZone(bTog, "hud_toggle", null);
             y += Sf(72f);
 
-            // Middle Split: Left = 6-Corner Monitor Preview + Target Display | Right = Style, Presets & System Behavior
+            // Middle Split: Left = 6-Corner Monitor Preview + Target Display + Edge Margin + Free Drag | Right = Style, Presets & System Behavior
             float gap = Sf(12f);
             float leftW = availW * 0.46f;
             float rightW = availW - leftW - gap;
-            float midH = Sf(198f);
+            float midH = Sf(238f);
 
-            // Left: Visual Monitor 6-Position Picker + Multi-Monitor Target Selector
+            // Left: Visual Monitor 6-Position Picker + Multi-Monitor Target Selector + Margin + Free Drag
             RectangleF posCard = new RectangleF(0, y, leftW, midH);
             DrawBox(g, posCard, Sf(10f), ColCard, ColBorder);
-            DrawText(g, T("SCREEN POSITION & TARGET MONITOR", "EKRAN KONUMU VE HEDEF MONİTÖR", "屏幕位置与目标显示器"),
+            DrawText(g, T("SCREEN POSITION, EDGE MARGIN & FREE DRAG", "EKRAN KONUMU, KENAR BOŞLUĞU VE SERBEST SÜRÜKLE", "屏幕位置、贴边间距与自由拖动"),
                 _fSec, ColCyan, new RectangleF(posCard.X + Sf(14f), posCard.Y + Sf(10f), posCard.Width - Sf(28f), Sf(18f)), StringAlignment.Near);
 
-            RectangleF mon = new RectangleF(posCard.X + Sf(14f), posCard.Y + Sf(34f), posCard.Width - Sf(28f), Sf(118f));
+            RectangleF mon = new RectangleF(posCard.X + Sf(14f), posCard.Y + Sf(32f), posCard.Width - Sf(28f), Sf(96f));
             DrawBox(g, mon, Sf(8f), Color.FromArgb(12, 16, 23), Color.FromArgb(52, 64, 82));
 
             string[] posNames = new string[]
@@ -845,14 +846,14 @@ namespace CorePulse
                 T("Bottom-Right", "Alt-Sağ", "右下角")
             };
             float cellW = (mon.Width - Sf(24f)) / 3f;
-            float cellH = (mon.Height - Sf(24f)) / 2f;
+            float cellH = (mon.Height - Sf(20f)) / 2f;
             for (int i = 0; i < 6; i++)
             {
                 int col = i % 3;
                 int row = i / 3;
-                RectangleF zr = new RectangleF(mon.X + Sf(8f) + col * (cellW + Sf(4f)), mon.Y + Sf(8f) + row * (cellH + Sf(8f)), cellW, cellH);
+                RectangleF zr = new RectangleF(mon.X + Sf(8f) + col * (cellW + Sf(4f)), mon.Y + Sf(7f) + row * (cellH + Sf(6f)), cellW, cellH);
                 OverlayAnchor anc = (OverlayAnchor)i;
-                bool act = Settings.OverlayPosition == anc;
+                bool act = !Settings.OverlayCustomPos && Settings.OverlayPosition == anc;
                 bool hov = IsHov("hud_pos", anc);
                 DrawBox(g, zr, Sf(6f), act ? ColEmeraldBg : (hov ? ColBtnHover : Color.FromArgb(20, 26, 36)), act ? ColEmerald : (hov ? ColCyan : ColBorder));
                 DrawText(g, posNames[i], _fBtn, act ? ColEmerald : ColTextBody, zr, StringAlignment.Center);
@@ -862,8 +863,8 @@ namespace CorePulse
             // Multi-Monitor Target Display Selector Row
             int scrCount = DemoMode ? 2 : Math.Max(1, Screen.AllScreens.Length);
             int maxMonBtns = Math.Min(3, scrCount); // Primary + up to 3 displays
-            float monY = posCard.Y + Sf(161f);
-            float monH = Sf(25f);
+            float monY = posCard.Y + Sf(136f);
+            float monH = Sf(24f);
             if (scrCount <= 1)
             {
                 Screen prim = Screen.PrimaryScreen;
@@ -871,7 +872,7 @@ namespace CorePulse
                     ? Loc.F(T("Monitor: Primary ({0}×{1})", "Monitör: Ana Ekran ({0}×{1})", "目标屏幕：主显示器 ({0}×{1})"), prim.Bounds.Width, prim.Bounds.Height)
                     : T("Monitor: Primary", "Monitör: Ana Ekran", "目标屏幕：主显示器");
                 RectangleF mr = new RectangleF(posCard.X + Sf(14f), monY, posCard.Width - Sf(28f), monH);
-                DrawPillBtn(g, mr, primLbl, IsHov("hud_monitor", 0), true, true);
+                DrawPillBtn(g, mr, primLbl, IsHov("hud_monitor", 0), !Settings.OverlayCustomPos, true);
                 AddZone(mr, "hud_monitor", 0);
             }
             else
@@ -885,11 +886,66 @@ namespace CorePulse
                     string lbl = i == 0
                         ? T("Primary", "Ana Ekran", "主屏")
                         : Loc.F(T("Display {0}", "Ekran {0}", "屏幕 {0}"), i);
-                    bool act = Settings.OverlayMonitorIndex == i;
+                    bool act = !Settings.OverlayCustomPos && Settings.OverlayMonitorIndex == i;
                     DrawPillBtn(g, mr, lbl, IsHov("hud_monitor", i), act, true);
                     AddZone(mr, "hud_monitor", i);
                 }
             }
+
+            // Edge Margin Quick Pills (0px Flush / 6px / 14px / 24px) + Fine -/+ Stepper
+            float mgY = posCard.Y + Sf(167f);
+            float mgH = Sf(24f);
+            float innerX = posCard.X + Sf(14f);
+            float innerW = posCard.Width - Sf(28f);
+            float mgLblW = Sf(46f);
+            float mgStepW = Sf(24f);
+            float mgValW = Sf(36f);
+            float mgGap = Sf(4f);
+            float mgPresetW = Math.Max(Sf(32f), (innerW - mgLblW - mgStepW * 2f - mgValW - mgGap * 6f) / 4f);
+
+            DrawText(g, T("Margin", "Kenar", "边距"), _fSmall, ColTextSec, new RectangleF(innerX, mgY, mgLblW, mgH), StringAlignment.Near);
+            float mxCur = innerX + mgLblW + mgGap;
+            int[] mgPresets = new int[] { 0, 6, 14, 24 };
+            for (int i = 0; i < mgPresets.Length; i++)
+            {
+                int mv = mgPresets[i];
+                RectangleF mpr = new RectangleF(mxCur, mgY, mgPresetW, mgH);
+                string mLbl = mv == 0 ? T("0px", "0px", "0贴边") : (mv + "px");
+                bool mAct = !Settings.OverlayCustomPos && Settings.OverlayMargin == mv;
+                DrawPillBtn(g, mpr, mLbl, IsHov("hud_margin", mv), mAct, true);
+                AddZone(mpr, "hud_margin", mv);
+                mxCur += mgPresetW + mgGap;
+            }
+            RectangleF bMgDec = new RectangleF(mxCur, mgY, mgStepW, mgH);
+            DrawPillBtn(g, bMgDec, "-", IsHov("hud_margin_dec", null), false, Settings.OverlayMargin > 0);
+            if (Settings.OverlayMargin > 0) AddZone(bMgDec, "hud_margin_dec", null);
+            mxCur += mgStepW + mgGap;
+
+            DrawText(g, Settings.OverlayMargin + "px", _fSmall, ColTextPrimary, new RectangleF(mxCur, mgY, mgValW, mgH), StringAlignment.Center);
+            mxCur += mgValW + mgGap;
+
+            RectangleF bMgInc = new RectangleF(mxCur, mgY, mgStepW, mgH);
+            DrawPillBtn(g, bMgInc, "+", IsHov("hud_margin_inc", null), false, Settings.OverlayMargin < 120);
+            if (Settings.OverlayMargin < 120) AddZone(bMgInc, "hud_margin_inc", null);
+
+            // Unlock & Drag HUD Anywhere Button
+            float drY = posCard.Y + Sf(199f);
+            RectangleF bDrag = new RectangleF(innerX, drY, innerW, Sf(26f));
+            string dragLbl;
+            if (HudDragUnlocked)
+            {
+                dragLbl = T("✓ Drag HUD with Mouse (Right-Click / Click Here to Lock)", "✓ HUD'u Fareyle Sürükle (Kilitlemek için Tıkla)", "✓ 请直接鼠标拖动悬浮窗（右键或点此锁定穿透）");
+            }
+            else if (Settings.OverlayCustomPos)
+            {
+                dragLbl = Loc.F(T("Unlock & Drag HUD  ·  Custom ({0}, {1})", "HUD'u Serbest Sürükle  ·  Özel ({0}, {1})", "解锁自由拖动  ·  自定义坐标 ({0}, {1})"), Settings.OverlayCustomX, Settings.OverlayCustomY);
+            }
+            else
+            {
+                dragLbl = T("Unlock & Drag HUD Anywhere (Custom Position)", "HUD'u Fareyle Serbest Sürükle (Özel Konum)", "解锁鼠标自由拖动（可完全贴顶 / 任意位置）");
+            }
+            DrawPillBtn(g, bDrag, dragLbl, IsHov("hud_drag_toggle", null), HudDragUnlocked, true);
+            AddZone(bDrag, "hud_drag_toggle", null);
 
             // Right: Style, Opacity, Size, Presets & System Tray / Startup Behavior
             RectangleF styCard = new RectangleF(leftW + gap, y, rightW, midH);
@@ -899,59 +955,59 @@ namespace CorePulse
 
             DrawText(g, T("STYLE, OPACITY, PRESETS & TRAY BEHAVIOR", "TASARIM, SAYDAMLIK, PROFİLLER VE SİSTEM TEPSİSİ", "样式、透明度、快捷方案与托盘行为"),
                 _fSec, ColCyan, new RectangleF(sx, sy, rightW - Sf(28f), Sf(18f)), StringAlignment.Near);
-            sy += Sf(24f);
+            sy += Sf(26f);
 
             // Layout Mode: Horizontal Bar vs Compact Card
             float bw2 = (rightW - Sf(36f)) * 0.5f;
-            RectangleF bHor = new RectangleF(sx, sy, bw2, Sf(26f));
+            RectangleF bHor = new RectangleF(sx, sy, bw2, Sf(28f));
             DrawPillBtn(g, bHor, T("Horizontal Bar", "Yatay Şerit Bar", "横向极简条"), IsHov("hud_layout", true), Settings.OverlayHorizontal, true);
             AddZone(bHor, "hud_layout", true);
-            RectangleF bVer = new RectangleF(bHor.Right + Sf(8f), sy, bw2, Sf(26f));
+            RectangleF bVer = new RectangleF(bHor.Right + Sf(8f), sy, bw2, Sf(28f));
             DrawPillBtn(g, bVer, T("Compact Card", "Dikey Kart", "竖向紧凑卡片"), IsHov("hud_layout", false), !Settings.OverlayHorizontal, true);
             AddZone(bVer, "hud_layout", false);
-            sy += Sf(34f);
+            sy += Sf(39f);
 
             // Opacity pills: 65%, 80%, 90%, 100%
             int[] opac = new int[] { 65, 80, 90, 100 };
             float opW = (rightW - Sf(52f)) / 4f;
             for (int i = 0; i < 4; i++)
             {
-                RectangleF or = new RectangleF(sx + i * (opW + Sf(8f)), sy, opW, Sf(24f));
+                RectangleF or = new RectangleF(sx + i * (opW + Sf(8f)), sy, opW, Sf(26f));
                 DrawPillBtn(g, or, opac[i] + "%", IsHov("hud_opacity", opac[i]), Math.Abs(Settings.OverlayOpacity - opac[i]) <= 5, true);
                 AddZone(or, "hud_opacity", opac[i]);
             }
-            sy += Sf(31f);
+            sy += Sf(37f);
 
             // Size pills: Compact / Normal / Large
             string[] szLbl = new string[] { T("Compact", "Küçük", "紧凑"), T("Normal", "Normal", "标准"), T("Large", "Büyük", "大号") };
             float szW = (rightW - Sf(44f)) / 3f;
             for (int i = 0; i < 3; i++)
             {
-                RectangleF sr = new RectangleF(sx + i * (szW + Sf(8f)), sy, szW, Sf(24f));
+                RectangleF sr = new RectangleF(sx + i * (szW + Sf(8f)), sy, szW, Sf(26f));
                 DrawPillBtn(g, sr, szLbl[i], IsHov("hud_scale", i), Settings.OverlayScale == i, true);
                 AddZone(sr, "hud_scale", i);
             }
-            sy += Sf(31f);
+            sy += Sf(37f);
 
             // Quick Gamer Presets
             string[] pIds = new string[] { "minimal", "gamer", "thermal" };
             string[] pLbl = new string[] { T("Minimal", "Minimal", "极简模式"), T("Pro Gamer", "Oyuncu", "玩家全显"), T("Thermals", "Isı & Fan", "温控专精") };
             for (int i = 0; i < 3; i++)
             {
-                RectangleF pr = new RectangleF(sx + i * (szW + Sf(8f)), sy, szW, Sf(24f));
+                RectangleF pr = new RectangleF(sx + i * (szW + Sf(8f)), sy, szW, Sf(26f));
                 DrawPillBtn(g, pr, pLbl[i], IsHov("hud_preset", pIds[i]), false, true);
                 AddZone(pr, "hud_preset", pIds[i]);
             }
-            sy += Sf(31f);
+            sy += Sf(37f);
 
             // System Behavior Toggles: Minimize to Tray & Start with Windows
-            RectangleF bTray = new RectangleF(sx, sy, bw2, Sf(25f));
+            RectangleF bTray = new RectangleF(sx, sy, bw2, Sf(26f));
             DrawPillBtn(g, bTray,
                 (Settings.MinimizeToTray ? "✓ " : "○ ") + T("Close to Tray", "Tepsiye Küçült", "关闭时驻留托盘"),
                 IsHov("toggle_tray", null), Settings.MinimizeToTray, true);
             AddZone(bTray, "toggle_tray", null);
 
-            RectangleF bAutoStart = new RectangleF(bTray.Right + Sf(8f), sy, bw2, Sf(25f));
+            RectangleF bAutoStart = new RectangleF(bTray.Right + Sf(8f), sy, bw2, Sf(26f));
             DrawPillBtn(g, bAutoStart,
                 (Settings.StartWithWindows ? "✓ " : "○ ") + T("Start with Windows", "Windows ile Başlat", "开机自启动"),
                 IsHov("toggle_startup", null), Settings.StartWithWindows, true);
@@ -1191,6 +1247,18 @@ namespace CorePulse
             _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
 
             _hud = new OverlayHudForm();
+            _hud.CustomPositionChanged += delegate(int cx, int cy)
+            {
+                _settings.OverlayCustomPos = true;
+                _settings.OverlayCustomX = cx;
+                _settings.OverlayCustomY = cy;
+                if (!_cfg.DemoMode) _settings.Save();
+                _content.Invalidate();
+            };
+            _hud.LockRequested += delegate
+            {
+                SetHudDragUnlocked(false);
+            };
 
             _content = new PulseContentPanel();
             _content.DemoMode = _cfg.DemoMode;
@@ -1228,7 +1296,7 @@ namespace CorePulse
                 _trayMenu = new ContextMenuStrip();
                 _trayIcon = new NotifyIcon();
                 _trayIcon.Icon = _appIcon ?? SystemIcons.Application;
-                _trayIcon.Text = "CorePulse v1.1";
+                _trayIcon.Text = "CorePulse v1.2";
                 _trayIcon.ContextMenuStrip = _trayMenu;
                 _trayIcon.DoubleClick += delegate { RestoreFromTray(); };
                 RebuildTrayMenu();
@@ -1256,6 +1324,11 @@ namespace CorePulse
             mHud.Checked = _settings.OverlayEnabled;
             mHud.Click += delegate { ToggleOverlay(); };
             _trayMenu.Items.Add(mHud);
+
+            ToolStripMenuItem mDrag = new ToolStripMenuItem(T("Unlock & Drag HUD", "HUD'u Serbest Sürükle", "解锁自由拖动悬浮窗"));
+            mDrag.Checked = _hud.DragUnlocked;
+            mDrag.Click += delegate { SetHudDragUnlocked(!_hud.DragUnlocked); };
+            _trayMenu.Items.Add(mDrag);
 
             _trayMenu.Items.Add(new ToolStripSeparator());
 
@@ -1508,8 +1581,20 @@ namespace CorePulse
             }
             else
             {
+                if (_hud.DragUnlocked) { _hud.SetDragUnlocked(false); _content.HudDragUnlocked = false; }
                 if (_hud.Visible) _hud.Hide();
             }
+            RebuildTrayMenu();
+            _content.Invalidate();
+            Invalidate();
+        }
+
+        private void SetHudDragUnlocked(bool unlocked)
+        {
+            if (unlocked && !_settings.OverlayEnabled)
+                ShowOrHideHud(true);
+            _hud.SetDragUnlocked(unlocked);
+            _content.HudDragUnlocked = _hud.DragUnlocked;
             RebuildTrayMenu();
             _content.Invalidate();
             Invalidate();
@@ -1623,8 +1708,12 @@ namespace CorePulse
                 }
             }
             else if (key == "hud_toggle") ToggleOverlay();
-            else if (key == "hud_pos" && payload is OverlayAnchor) { _settings.OverlayPosition = (OverlayAnchor)payload; RefreshHudIfVisible(); }
-            else if (key == "hud_monitor" && payload is int) { _settings.OverlayMonitorIndex = (int)payload; RefreshHudIfVisible(); }
+            else if (key == "hud_pos" && payload is OverlayAnchor) { _settings.OverlayPosition = (OverlayAnchor)payload; _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
+            else if (key == "hud_monitor" && payload is int) { _settings.OverlayMonitorIndex = (int)payload; _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
+            else if (key == "hud_margin" && payload is int) { _settings.OverlayMargin = Math.Max(0, Math.Min(120, (int)payload)); _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
+            else if (key == "hud_margin_dec") { _settings.OverlayMargin = Math.Max(0, _settings.OverlayMargin - 2); _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
+            else if (key == "hud_margin_inc") { _settings.OverlayMargin = Math.Min(120, _settings.OverlayMargin + 2); _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
+            else if (key == "hud_drag_toggle") SetHudDragUnlocked(!_hud.DragUnlocked);
             else if (key == "hud_layout" && payload is bool) { _settings.OverlayHorizontal = (bool)payload; RefreshHudIfVisible(); }
             else if (key == "hud_opacity" && payload is int) { _settings.OverlayOpacity = (int)payload; RefreshHudIfVisible(); }
             else if (key == "hud_scale" && payload is int) { _settings.OverlayScale = (int)payload; RefreshHudIfVisible(); }
@@ -1795,9 +1884,9 @@ namespace CorePulse
             float fy = ClientSize.Height - Sf(30f);
             using (Pen dp = new Pen(ColDivider, 1f)) g.DrawLine(dp, 0, fy, w, fy);
             string foot = T(
-                "CorePulse v1.1 · Anti-Cheat Safe DXGI/D3D9 ETW FPS · Thermal Guard ≥88°C · Tray & BIOS Auto-Restore on Exit.",
-                "CorePulse v1.1 · Anti-Cheat Güvenli DXGI/D3D9 ETW FPS · Termal Koruma ≥88°C · Sistem Tepsisi ve Çıkışta BIOS Modu.",
-                "CorePulse v1.1 · 零注入防封号 DXGI/D3D9 ETW 帧率 · ≥88°C 高温保护 · 系统托盘驻留与退出自动恢复 BIOS 温控。");
+                "CorePulse v1.2 · Anti-Cheat Safe DXGI/D3D9 ETW FPS · Thermal Guard ≥88°C · Tray & BIOS Auto-Restore on Exit.",
+                "CorePulse v1.2 · Anti-Cheat Güvenli DXGI/D3D9 ETW FPS · Termal Koruma ≥88°C · Sistem Tepsisi ve Çıkışta BIOS Modu.",
+                "CorePulse v1.2 · 零注入防封号 DXGI/D3D9 ETW 帧率 · ≥88°C 高温保护 · 系统托盘驻留与退出自动恢复 BIOS 温控。");
             DrawStr(g, foot, _fStatus, ColTextMuted, new RectangleF(pad, fy + Sf(4f), w - pad * 2f, Sf(22f)), StringAlignment.Near);
         }
 

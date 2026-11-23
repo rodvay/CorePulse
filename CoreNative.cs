@@ -77,7 +77,10 @@ namespace CorePulse
         public bool OverlayHorizontal = true;
         public int OverlayOpacity = 88; // 55..100
         public int OverlayScale = 1;    // 0=Compact, 1=Normal, 2=Large
-        public int OverlayMargin = 14;
+        public int OverlayMargin = 4;   // 0..120 (0 = flush to screen edge!)
+        public bool OverlayCustomPos = false;
+        public int OverlayCustomX = 0;
+        public int OverlayCustomY = 0;
 
         // 14 Individual HUD Metric Checkboxes
         public bool HudShowFps = true;
@@ -132,7 +135,10 @@ namespace CorePulse
                     else if (k == "OverlayHorizontal") s.OverlayHorizontal = (v == "1");
                     else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(55, Math.Min(100, iv));
                     else if (k == "OverlayScale" && int.TryParse(v, out iv) && iv >= 0 && iv <= 2) s.OverlayScale = iv;
-                    else if (k == "OverlayMargin" && int.TryParse(v, out iv)) s.OverlayMargin = Math.Max(4, Math.Min(60, iv));
+                    else if (k == "OverlayMargin" && int.TryParse(v, out iv)) s.OverlayMargin = Math.Max(0, Math.Min(120, iv));
+                    else if (k == "OverlayCustomPos") s.OverlayCustomPos = (v == "1");
+                    else if (k == "OverlayCustomX" && int.TryParse(v, out iv)) s.OverlayCustomX = iv;
+                    else if (k == "OverlayCustomY" && int.TryParse(v, out iv)) s.OverlayCustomY = iv;
                     else if (k == "HudShowFps") s.HudShowFps = (v == "1");
                     else if (k == "HudShowFps1Low") s.HudShowFps1Low = (v == "1");
                     else if (k == "HudShowCpuTemp") s.HudShowCpuTemp = (v == "1");
@@ -194,6 +200,9 @@ namespace CorePulse
                 sb.AppendLine("OverlayOpacity=" + OverlayOpacity);
                 sb.AppendLine("OverlayScale=" + OverlayScale);
                 sb.AppendLine("OverlayMargin=" + OverlayMargin);
+                sb.AppendLine("OverlayCustomPos=" + (OverlayCustomPos ? "1" : "0"));
+                sb.AppendLine("OverlayCustomX=" + OverlayCustomX);
+                sb.AppendLine("OverlayCustomY=" + OverlayCustomY);
                 sb.AppendLine("HudShowFps=" + (HudShowFps ? "1" : "0"));
                 sb.AppendLine("HudShowFps1Low=" + (HudShowFps1Low ? "1" : "0"));
                 sb.AppendLine("HudShowCpuTemp=" + (HudShowCpuTemp ? "1" : "0"));
@@ -265,6 +274,8 @@ namespace CorePulse
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_NOMOVE = 0x0002;
         public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint SWP_FRAMECHANGED = 0x0020;
+        public const int GWL_EXSTYLE = -20;
         public const uint MSGFLT_ALLOW = 1;
         public const int ULW_ALPHA = 0x00000002;
         public const byte AC_SRC_OVER = 0x00;
@@ -325,6 +336,12 @@ namespace CorePulse
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+        public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+        public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

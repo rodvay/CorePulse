@@ -34,6 +34,17 @@ namespace CorePulse
         private CorePulseSettings _cfg = new CorePulseSettings();
         private TelemetrySnapshot _snap = new TelemetrySnapshot();
         private float _dpiScale = 1.0f;
+        private bool _dragUnlocked;
+        private bool _dragging;
+        private Point _dragStartMouse;
+        private Point _dragStartWin;
+        private int _lastBmpW;
+        private int _lastBmpH;
+
+        public event Action<int, int> CustomPositionChanged;
+        public event Action LockRequested;
+
+        public bool DragUnlocked { get { return _dragUnlocked; } }
 
         public OverlayHudForm()
         {
@@ -52,10 +63,90 @@ namespace CorePulse
                 CreateParams cp = base.CreateParams;
                 cp.ExStyle |= WinNative.WS_EX_TOPMOST
                             | WinNative.WS_EX_LAYERED
-                            | WinNative.WS_EX_TRANSPARENT
                             | WinNative.WS_EX_NOACTIVATE
                             | WinNative.WS_EX_TOOLWINDOW;
+                if (!_dragUnlocked)
+                    cp.ExStyle |= WinNative.WS_EX_TRANSPARENT;
                 return cp;
+            }
+        }
+
+        public void SetDragUnlocked(bool unlocked)
+        {
+            _dragUnlocked = unlocked;
+            if (!unlocked)
+            {
+                _dragging = false;
+                try { Capture = false; } catch { }
+            }
+            Cursor = unlocked ? Cursors.SizeAll : Cursors.Default;
+            ApplyClickThroughStyle();
+            if (IsHandleCreated)
+                UpdateHud(_cfg, _snap, _dpiScale);
+        }
+
+        private void ApplyClickThroughStyle()
+        {
+            if (!IsHandleCreated) return;
+            try
+            {
+                long ex = WinNative.GetWindowLongPtr(Handle, WinNative.GWL_EXSTYLE).ToInt64();
+                if (_dragUnlocked)
+                    ex &= ~(long)WinNative.WS_EX_TRANSPARENT;
+                else
+                    ex |= (long)WinNative.WS_EX_TRANSPARENT;
+                WinNative.SetWindowLongPtr(Handle, WinNative.GWL_EXSTYLE, new IntPtr(ex));
+                WinNative.SetWindowPos(
+                    Handle, WinNative.HWND_TOPMOST, 0, 0, 0, 0,
+                    WinNative.SWP_NOMOVE | WinNative.SWP_NOSIZE | WinNative.SWP_NOACTIVATE | WinNative.SWP_FRAMECHANGED);
+            }
+            catch { }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (!_dragUnlocked) return;
+            if (e.Button == MouseButtons.Right)
+            {
+                if (LockRequested != null) LockRequested();
+                return;
+            }
+            if (e.Button == MouseButtons.Left)
+            {
+                _dragging = true;
+                _dragStartMouse = Cursor.Position;
+                _dragStartWin = Location;
+                Capture = true;
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!_dragging || !_dragUnlocked) return;
+            Point cur = Cursor.Position;
+            int nx = _dragStartWin.X + (cur.X - _dragStartMouse.X);
+            int ny = _dragStartWin.Y + (cur.Y - _dragStartMouse.Y);
+            Point clamped = ClampToVirtualScreen(nx, ny, _lastBmpW > 0 ? _lastBmpW : Width, _lastBmpH > 0 ? _lastBmpH : Height);
+            WinNative.SetWindowPos(
+                Handle, WinNative.HWND_TOPMOST, clamped.X, clamped.Y, 0, 0,
+                WinNative.SWP_NOSIZE | WinNative.SWP_NOACTIVATE);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (_dragging && e.Button == MouseButtons.Left)
+            {
+                _dragging = false;
+                Capture = false;
+                Point pos = Location;
+                _cfg.OverlayCustomPos = true;
+                _cfg.OverlayCustomX = pos.X;
+                _cfg.OverlayCustomY = pos.Y;
+                if (CustomPositionChanged != null)
+                    CustomPositionChanged(pos.X, pos.Y);
             }
         }
 
@@ -81,9 +172,11 @@ namespace CorePulse
             _snap = snap ?? new TelemetrySnapshot();
             _dpiScale = dpiScale > 0.5f ? dpiScale : 1.0f;
 
-            using (Bitmap bmp = RenderHudBitmap(_cfg, _snap, _dpiScale))
+            using (Bitmap bmp = RenderHudBitmap(_cfg, _snap, _dpiScale, _dragUnlocked))
             {
-                Point dst = ComputeTargetPosition(bmp.Width, bmp.Height);
+                _lastBmpW = bmp.Width;
+                _lastBmpH = bmp.Height;
+                Point dst = _dragging ? Location : ComputeTargetPosition(bmp.Width, bmp.Height);
                 if (IsHandleCreated)
                 {
                     PushLayeredBitmap(bmp, dst);
@@ -99,6 +192,7 @@ namespace CorePulse
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            ApplyClickThroughStyle();
             UpdateHud(_cfg, _snap, _dpiScale);
         }
 
@@ -114,33 +208,54 @@ namespace CorePulse
             }
         }
 
-        private Point ComputeTargetPosition(int w, int h)
+        internal static Point ClampToVirtualScreen(int x, int y, int w, int h)
         {
-            Screen sc = ResolveTargetScreen(_cfg.OverlayMonitorIndex);
-            Rectangle bounds = sc != null ? sc.Bounds : new Rectangle(0, 0, 1920, 1080);
-            int margin = (int)Math.Round(_cfg.OverlayMargin * _dpiScale);
+            Rectangle vs = SystemInformation.VirtualScreen;
+            if (vs.Width <= 0 || vs.Height <= 0)
+                vs = new Rectangle(0, 0, 1920, 1080);
+            if (x < vs.Left) x = vs.Left;
+            if (y < vs.Top) y = vs.Top;
+            if (x + w > vs.Right) x = Math.Max(vs.Left, vs.Right - w);
+            if (y + h > vs.Bottom) y = Math.Max(vs.Top, vs.Bottom - h);
+            return new Point(x, y);
+        }
+
+        internal static Point ComputeAnchoredPosition(CorePulseSettings cfg, Rectangle bounds, Rectangle workingArea, int w, int h, float dpiScale)
+        {
+            if (cfg.OverlayCustomPos)
+                return ClampToVirtualScreen(cfg.OverlayCustomX, cfg.OverlayCustomY, w, h);
+
+            int margin = (int)Math.Round(Math.Max(0, cfg.OverlayMargin) * dpiScale);
 
             int x = bounds.Left + margin;
             int y = bounds.Top + margin;
 
-            if (_cfg.OverlayPosition == OverlayAnchor.TopCenter || _cfg.OverlayPosition == OverlayAnchor.BottomCenter)
+            if (cfg.OverlayPosition == OverlayAnchor.TopCenter || cfg.OverlayPosition == OverlayAnchor.BottomCenter)
                 x = bounds.Left + (bounds.Width - w) / 2;
-            else if (_cfg.OverlayPosition == OverlayAnchor.TopRight || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
+            else if (cfg.OverlayPosition == OverlayAnchor.TopRight || cfg.OverlayPosition == OverlayAnchor.BottomRight)
                 x = bounds.Right - w - margin;
 
-            if (_cfg.OverlayPosition == OverlayAnchor.BottomLeft || _cfg.OverlayPosition == OverlayAnchor.BottomCenter || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
+            if (cfg.OverlayPosition == OverlayAnchor.BottomLeft || cfg.OverlayPosition == OverlayAnchor.BottomCenter || cfg.OverlayPosition == OverlayAnchor.BottomRight)
             {
-                int workBottom = sc != null ? sc.WorkingArea.Bottom : bounds.Bottom;
+                int workBottom = workingArea.Height > 0 ? workingArea.Bottom : bounds.Bottom;
                 y = Math.Min(bounds.Bottom, workBottom) - h - margin;
             }
 
-            // Clamp safely inside target monitor
-            if (x < bounds.Left + 4) x = bounds.Left + 4;
-            if (y < bounds.Top + 4) y = bounds.Top + 4;
-            if (x + w > bounds.Right - 4) x = Math.Max(bounds.Left + 4, bounds.Right - w - 4);
-            if (y + h > bounds.Bottom - 4) y = Math.Max(bounds.Top + 4, bounds.Bottom - h - 4);
+            // Clamp flush to target monitor edges (allows exact 0px flush top/side/bottom!)
+            if (x < bounds.Left) x = bounds.Left;
+            if (y < bounds.Top) y = bounds.Top;
+            if (x + w > bounds.Right) x = Math.Max(bounds.Left, bounds.Right - w);
+            if (y + h > bounds.Bottom) y = Math.Max(bounds.Top, bounds.Bottom - h);
 
             return new Point(x, y);
+        }
+
+        private Point ComputeTargetPosition(int w, int h)
+        {
+            Screen sc = ResolveTargetScreen(_cfg.OverlayMonitorIndex);
+            Rectangle bounds = sc != null ? sc.Bounds : new Rectangle(0, 0, 1920, 1080);
+            Rectangle work = sc != null ? sc.WorkingArea : bounds;
+            return ComputeAnchoredPosition(_cfg, bounds, work, w, h, _dpiScale);
         }
 
         private void PushLayeredBitmap(Bitmap bmp, Point dst)
@@ -283,6 +398,11 @@ namespace CorePulse
 
         public static Bitmap RenderHudBitmap(CorePulseSettings c, TelemetrySnapshot s, float dpiScale)
         {
+            return RenderHudBitmap(c, s, dpiScale, false);
+        }
+
+        public static Bitmap RenderHudBitmap(CorePulseSettings c, TelemetrySnapshot s, float dpiScale, bool dragUnlocked)
+        {
             float sizeMult = c.OverlayScale == 0 ? 0.86f : (c.OverlayScale == 2 ? 1.18f : 1.0f);
             float sf = (dpiScale > 0.5f ? dpiScale : 1.0f) * sizeMult;
             string fam = Loc.FontFamily(c.Language);
@@ -334,12 +454,14 @@ namespace CorePulse
 
                     int bgAlpha = Math.Max(130, Math.Min(245, (int)Math.Round((c.OverlayOpacity / 100.0) * 238.0)));
                     int bdAlpha = Math.Max(160, Math.Min(255, bgAlpha + 20));
-                    RectangleF rc = new RectangleF(1f, 1f, w - 2.5f, h - 2.5f);
+                    RectangleF rc = new RectangleF(0.5f, 0.5f, w - 1.5f, h - 1.5f);
                     float rad = (c.OverlayHorizontal ? 9f : 10f) * sf;
 
+                    Color borderCol = dragUnlocked ? Color.FromArgb(255, ColCyan) : Color.FromArgb(bdAlpha, ColHudBorder);
+                    float borderW = dragUnlocked ? 2.0f : 1.2f;
                     using (GraphicsPath gp = Rounded(rc, rad))
                     using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
-                    using (Pen bd = new Pen(Color.FromArgb(bdAlpha, ColHudBorder), 1.2f))
+                    using (Pen bd = new Pen(borderCol, borderW))
                     {
                         g.FillPath(bg, gp);
                         g.DrawPath(bd, gp);

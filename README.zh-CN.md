@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> &nbsp;·&nbsp; <b>简体中文</b> &nbsp;·&nbsp; <a href="README.md#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>下载便携版 (v1.1.2)</b></a>
+  <a href="README.md"><b>English</b></a> &nbsp;·&nbsp; <b>简体中文</b> &nbsp;·&nbsp; <a href="README.md#türkçe"><b>Türkçe</b></a> &nbsp;·&nbsp; <a href="https://github.com/rodvay/CorePulse/releases/latest"><b>下载便携版 (v1.2.0)</b></a>
 </p>
 
 ---
