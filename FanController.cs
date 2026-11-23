@@ -60,6 +60,24 @@ namespace CorePulse
             return pct;
         }
 
+        public void RestoreSavedSettingsOnStartup(CorePulseSettings cfg, List<FanChannelInfo> fans, bool demoMode)
+        {
+            if (cfg == null || fans == null) return;
+            foreach (FanChannelInfo f in fans)
+            {
+                if (!f.HasControl) continue;
+                int savedMode;
+                if (cfg.SavedFanModes.TryGetValue(f.Id, out savedMode))
+                    f.Mode = savedMode;
+                else if (cfg.FanProfile != FanProfileMode.BiosAuto)
+                    f.Mode = 2; // Apply saved global curve automatically!
+
+                int savedMan;
+                if (cfg.SavedFanManuals.TryGetValue(f.Id, out savedMan))
+                    f.ManualDutyPct = ClampDuty(savedMan);
+            }
+        }
+
         public void ApplyGlobalProfile(CorePulseSettings cfg, List<FanChannelInfo> fans, FanProfileMode mode, bool demoMode)
         {
             ApplyPresetToSettings(cfg, mode);
@@ -71,11 +89,13 @@ namespace CorePulse
                 if (mode == FanProfileMode.BiosAuto)
                 {
                     f.Mode = 0;
+                    cfg.SavedFanModes[f.Id] = 0;
                     if (!demoMode) SetFanDefaultSafe(f);
                 }
                 else
                 {
-                    f.Mode = 2; // Curve
+                    f.Mode = 2;
+                    cfg.SavedFanModes[f.Id] = 2;
                 }
             }
             _lastAppliedTemp.Clear();
@@ -90,7 +110,6 @@ namespace CorePulse
                 return;
             }
 
-            // Mandatory Hardware Thermal Safety Override (never lets CPU >= 88C or GPU >= 83C stay throttled!)
             bool safety = (snap.CpuTempC >= ThermalSafetyCpuC) || (snap.GpuTempC >= ThermalSafetyGpuC);
             SafetyOverrideActive = safety;
             snap.ThermalSafetyOverride = safety;
@@ -108,7 +127,6 @@ namespace CorePulse
 
                 if (f.Mode == 0)
                 {
-                    // BIOS Auto — only reset if previously driven by software
                     if (_lastAppliedDuty.ContainsKey(f.Id))
                     {
                         if (!demoMode) SetFanDefaultSafe(f);
@@ -129,7 +147,6 @@ namespace CorePulse
                 }
                 else if (f.Mode == 2)
                 {
-                    // Curve mode: GPU fans track GPU Temp, case/CPU fans track Max(CPU, GPU) or configured source
                     float srcTemp;
                     if (f.IsGpuFan)
                         srcTemp = snap.GpuTempC > 1f ? snap.GpuTempC : 55f;
@@ -138,7 +155,6 @@ namespace CorePulse
                     else
                         srcTemp = Math.Max(snap.CpuTempC > 1f ? snap.CpuTempC : 45f, snap.GpuTempC > 1f ? snap.GpuTempC * 0.85f : 40f);
 
-                    // 2.0C hysteresis prevents rapid fan speed hunting
                     float lastT;
                     if (_lastAppliedTemp.TryGetValue(f.Id, out lastT) && Math.Abs(srcTemp - lastT) < 2.0f && _lastAppliedDuty.ContainsKey(f.Id))
                         continue;
@@ -168,22 +184,14 @@ namespace CorePulse
 
         private static void SetFanSoftwareSafe(FanChannelInfo f, int pct)
         {
-            try
-            {
-                if (f != null && f.NativeControl != null)
-                    f.NativeControl.SetSoftware(pct);
-            }
-            catch { }
+            if (f != null && f.NativeControl != null && LibResolver.IsLhmDllPresent())
+                LhmBackend.SetFanSoftware(f.NativeControl, pct);
         }
 
         private static void SetFanDefaultSafe(FanChannelInfo f)
         {
-            try
-            {
-                if (f != null && f.NativeControl != null)
-                    f.NativeControl.SetDefault();
-            }
-            catch { }
+            if (f != null && f.NativeControl != null && LibResolver.IsLhmDllPresent())
+                LhmBackend.SetFanDefault(f.NativeControl);
         }
     }
 }

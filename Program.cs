@@ -8,10 +8,10 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("CorePulse — Hardware Monitor, Fan Controller & Gaming HUD")]
-[assembly: AssemblyDescription("Lightweight native Windows 10/11 hardware telemetry, PWM fan curve controller with thermal safety override, zero-injection ETW FPS counter, and click-through Always-On-Top Gaming HUD (EN/TR/zh-CN).")]
+[assembly: AssemblyDescription("Lightweight native Windows 10/11 hardware telemetry, PWM fan curve controller with thermal safety override, zero-injection DXGI/D3D9 ETW FPS counter, System Tray support, and 32-bit per-pixel alpha Always-On-Top Gaming HUD (EN/TR/zh-CN).")]
 [assembly: AssemblyProduct("CorePulse")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace CorePulse
 {
@@ -21,6 +21,7 @@ namespace CorePulse
         public string ForceLang;
         public int InitialTab;
         public bool ShowDemoOverlay;
+        public bool StartMinimized;
 
         public static LaunchConfig Parse(string[] args)
         {
@@ -31,6 +32,7 @@ namespace CorePulse
                 string a = (args[i] ?? "").Trim().ToLowerInvariant();
                 if (a == "--demo") c.DemoMode = true;
                 else if (a == "--hud") c.ShowDemoOverlay = true;
+                else if (a == "--minimized" || a == "--tray") c.StartMinimized = true;
                 else if (a == "--lang" && i + 1 < args.Length)
                 {
                     string l = (args[++i] ?? "").Trim().ToLowerInvariant();
@@ -106,6 +108,7 @@ namespace CorePulse
         public HardwareEngine Engine;
         public TelemetrySnapshot Snap = new TelemetrySnapshot();
         public string SensorFilter = "ALL";
+        public bool DemoMode;
 
         public event Action<string, object> ActionInvoked;
 
@@ -340,52 +343,52 @@ namespace CorePulse
             DrawHeroCard(g, new RectangleF(0, y, cw, ch), ColCyan,
                 T("PROCESSOR (CPU)", "İŞLEMCİ (CPU)", "处理器 (CPU)"),
                 s.CpuName,
-                s.CpuTempC > 0f ? string.Format("{0:0.0}°C", s.CpuTempC) : T("Admin", "Yönetici", "需管理员"),
+                s.CpuTempC > 0f ? Loc.F("{0:0.0}°C", s.CpuTempC) : T("Admin", "Yönetici", "需管理员"),
                 s.CpuTempC > 0f ? OverlayHudForm.TempColor(s.CpuTempC) : ColAmber,
                 s.CpuLoadPct,
-                string.Format(T("Load {0:0}%  ·  Clock {1}  ·  Power {2}", "Yük %{0:0}  ·  Saat {1}  ·  Güç {2}", "负载 {0:0}%  ·  频率 {1}  ·  功耗 {2}"),
+                Loc.F(T("Load {0:0}%  ·  Clock {1}  ·  Power {2}", "Yük %{0:0}  ·  Saat {1}  ·  Güç {2}", "负载 {0:0}%  ·  频率 {1}  ·  功耗 {2}"),
                     s.CpuLoadPct,
-                    s.CpuClockMhz > 100f ? string.Format("{0:0.00} GHz", s.CpuClockMhz / 1000f) : "--",
-                    s.CpuPowerW > 1f ? string.Format("{0:0.0} W", s.CpuPowerW) : "--"));
+                    s.CpuClockMhz > 100f ? Loc.F("{0:0.00} GHz", s.CpuClockMhz / 1000f) : "--",
+                    s.CpuPowerW > 1f ? Loc.F("{0:0.0} W", s.CpuPowerW) : "--"));
 
             // Card 2: GPU
             DrawHeroCard(g, new RectangleF(cw + gap, y, cw, ch), ColEmerald,
                 T("GRAPHICS (GPU)", "EKRAN KARTI (GPU)", "显卡 (GPU)"),
                 s.GpuName,
-                s.GpuTempC > 0f ? string.Format("{0:0.0}°C", s.GpuTempC) : "--°C",
+                s.GpuTempC > 0f ? Loc.F("{0:0.0}°C", s.GpuTempC) : "--°C",
                 OverlayHudForm.TempColor(s.GpuTempC),
                 s.GpuLoadPct >= 0f ? s.GpuLoadPct : 0f,
-                string.Format(T("Load {0:0}%  ·  VRAM {1}  ·  Fan {2}  ·  {3}", "Yük %{0:0}  ·  VRAM {1}  ·  Fan {2}  ·  {3}", "负载 {0:0}%  ·  显存 {1}  ·  风扇 {2}  ·  {3}"),
+                Loc.F(T("Load {0:0}%  ·  VRAM {1}  ·  Fan {2}  ·  {3}", "Yük %{0:0}  ·  VRAM {1}  ·  Fan {2}  ·  {3}", "负载 {0:0}%  ·  显存 {1}  ·  风扇 {2}  ·  {3}"),
                     Math.Max(0f, s.GpuLoadPct),
-                    s.GpuVramUsedGb >= 0f ? string.Format("{0:0.0}/{1:0}G", s.GpuVramUsedGb, s.GpuVramTotalGb) : (s.GpuVramTotalGb > 0f ? string.Format("{0:0}G", s.GpuVramTotalGb) : "--"),
-                    s.GpuFanRpm > 0f ? string.Format("{0:0} RPM", s.GpuFanRpm) : (s.GpuFanPct >= 0f ? string.Format("{0:0}%", s.GpuFanPct) : "--"),
-                    s.GpuPowerW > 1f ? string.Format("{0:0} W", s.GpuPowerW) : "--"));
+                    s.GpuVramUsedGb >= 0f ? Loc.F("{0:0.0}/{1:0}G", s.GpuVramUsedGb, s.GpuVramTotalGb) : (s.GpuVramTotalGb > 0f ? Loc.F("{0:0}G", s.GpuVramTotalGb) : "--"),
+                    s.GpuFanRpm > 0f ? Loc.F("{0:0} RPM", s.GpuFanRpm) : (s.GpuFanPct >= 0f ? Loc.F("{0:0}%", s.GpuFanPct) : "--"),
+                    s.GpuPowerW > 1f ? Loc.F("{0:0} W", s.GpuPowerW) : "--"));
 
             y += ch + gap;
 
             // Card 3: RAM & Motherboard / Storage
             DrawHeroCard(g, new RectangleF(0, y, cw, ch), ColViolet,
                 T("MEMORY, BOARD & SSD", "BELLEK, ANAKART VE DİSK", "内存、主板与硬盘"),
-                !string.IsNullOrEmpty(s.RamSpecText) ? s.RamSpecText : string.Format("{0:0} GB RAM", s.RamTotalGb),
-                string.Format("{0:0}%", s.RamLoadPct),
+                !string.IsNullOrEmpty(s.RamSpecText) ? s.RamSpecText : Loc.F("{0:0} GB RAM", s.RamTotalGb),
+                Loc.F("{0:0}%", s.RamLoadPct),
                 s.RamLoadPct >= 88f ? ColAmber : ColTextPrimary,
                 s.RamLoadPct,
-                string.Format(T("Used {0:0.0}/{1:0} GB  ·  Board {2}  ·  SSD {3}", "Kullanım {0:0.0}/{1:0} GB  ·  Anakart {2}  ·  SSD {3}", "已用 {0:0.0}/{1:0} GB  ·  主板 {2}  ·  硬盘 {3}"),
+                Loc.F(T("Used {0:0.0}/{1:0} GB  ·  Board {2}  ·  SSD {3}", "Kullanım {0:0.0}/{1:0} GB  ·  Anakart {2}  ·  SSD {3}", "已用 {0:0.0}/{1:0} GB  ·  主板 {2}  ·  硬盘 {3}"),
                     s.RamUsedGb, s.RamTotalGb,
-                    s.BoardTempC > 0f ? string.Format("{0:0}°C", s.BoardTempC) : "--",
-                    s.StorageTempC > 0f ? string.Format("{0:0}°C", s.StorageTempC) : "--"));
+                    s.BoardTempC > 0f ? Loc.F("{0:0}°C", s.BoardTempC) : "--",
+                    s.StorageTempC > 0f ? Loc.F("{0:0}°C", s.StorageTempC) : "--"));
 
             // Card 4: Live Gaming FPS (ETW) & Power / Net
             string fpsHero = s.Fps > 0.5f
-                ? string.Format("{0:0} FPS", s.Fps)
+                ? Loc.F("{0:0} FPS", s.Fps)
                 : (s.FpsEtwActive ? T("Idle", "Beklemede", "待机") : T("Admin", "Yönetici", "需管理员"));
             Color fpsCol = s.Fps >= 60f ? ColEmerald : (s.Fps > 0.5f ? ColAmber : ColTextSec);
             string fpsSubTitle = !string.IsNullOrEmpty(s.ActiveGameProcess)
-                ? ("DXGI ETW · " + s.ActiveGameProcess)
-                : T("Zero-Injection Anti-Cheat Safe ETW Monitor", "Anti-Cheat Güvenli Enjeksiyonsuz ETW FPS", "零注入防封号 Windows ETW 帧率监测");
+                ? ("DXGI / D3D9 ETW · " + s.ActiveGameProcess)
+                : T("Zero-Injection Anti-Cheat Safe DXGI / D3D9 ETW", "Anti-Cheat Güvenli Enjeksiyonsuz DXGI / D3D9 ETW", "零注入防封号 DXGI / D3D9 ETW 帧率监测");
             string fpsBottom = s.Fps > 0.5f
-                ? string.Format("1% Low {0:0}  ·  {1:0.0} ms  ·  {2} {3:0} W  ·  ↓{4:0.0} Mb", s.Fps1Low, s.FrametimeMs, s.PsuLabel, s.EstimatedTotalPowerW, s.NetDownMbps)
-                : string.Format("{0}: ~{1:0} W  ·  Net ↓{2:0.0} / ↑{3:0.0} Mbps", s.PsuLabel, Math.Max(0f, s.EstimatedTotalPowerW), s.NetDownMbps, s.NetUpMbps);
+                ? Loc.F("1% Low {0:0}  ·  {1:0.0} ms  ·  {2} {3:0} W  ·  ↓{4:0.0} Mb", s.Fps1Low, s.FrametimeMs, s.PsuLabel, s.EstimatedTotalPowerW, s.NetDownMbps)
+                : Loc.F("{0}: ~{1:0} W  ·  Net ↓{2:0.0} / ↑{3:0.0} Mbps", s.PsuLabel, Math.Max(0f, s.EstimatedTotalPowerW), s.NetDownMbps, s.NetUpMbps);
             DrawHeroCard(g, new RectangleF(cw + gap, y, cw, ch), ColAmber,
                 T("GAMING FPS & SYSTEM POWER", "OYUN FPS VE SİSTEM GÜCÜ", "游戏帧率与系统功耗"),
                 fpsSubTitle, fpsHero, fpsCol,
@@ -404,7 +407,7 @@ namespace CorePulse
             // Hardware Inventory Footer Strip
             RectangleF specCard = new RectangleF(0, y, availW, Sf(48f));
             DrawBox(g, specCard, Sf(9f), ColCard, ColBorder);
-            string specLine = string.Format(
+            string specLine = Loc.F(
                 T("Motherboard: {0}   ·   Storage: {1}   ·   Fans Detected: {2}   ·   HUD Hotkey: Ctrl+Shift+O",
                   "Anakart: {0}   ·   Disk: {1}   ·   Algılanan Fan: {2}   ·   HUD Kısayol: Ctrl+Shift+O",
                   "主板：{0}   ·   硬盘：{1}   ·   已检测风扇：{2}   ·   悬浮窗热键：Ctrl+Shift+O"),
@@ -452,8 +455,8 @@ namespace CorePulse
                 _fSec, ColCyan, new RectangleF(card.X + Sf(14f), card.Y + Sf(10f), Sf(320f), Sf(18f)), StringAlignment.Near);
 
             // Legend on top right
-            string legCpu = s.CpuTempC > 0f ? string.Format("● CPU {0:0.0}°C", s.CpuTempC) : "● CPU --";
-            string legGpu = s.GpuTempC > 0f ? string.Format("● GPU {0:0.0}°C", s.GpuTempC) : "● GPU --";
+            string legCpu = s.CpuTempC > 0f ? Loc.F("● CPU {0:0.0}°C", s.CpuTempC) : "● CPU --";
+            string legGpu = s.GpuTempC > 0f ? Loc.F("● GPU {0:0.0}°C", s.GpuTempC) : "● GPU --";
             DrawText(g, legCpu, _fBtn, ColCyan, new RectangleF(card.Right - Sf(250f), card.Y + Sf(9f), Sf(116f), Sf(19f)), StringAlignment.Far);
             DrawText(g, legGpu, _fBtn, ColEmerald, new RectangleF(card.Right - Sf(126f), card.Y + Sf(9f), Sf(112f), Sf(19f)), StringAlignment.Far);
 
@@ -570,9 +573,9 @@ namespace CorePulse
 
                     Color valCol = sr.TypeLabel == "Temp" ? OverlayHudForm.TempColor(sr.Value) : (sr.TypeLabel == "Fan" ? ColCyan : ColTextPrimary);
                     string fmt = sr.Unit == "RPM" || sr.Unit == "MHz" ? "{0:0} {1}" : "{0:0.0} {1}";
-                    DrawText(g, string.Format(fmt, sr.Value, sr.Unit), _fBtn, valCol, new RectangleF(availW - Sf(275f), y, Sf(85f), rowH), StringAlignment.Far);
-                    DrawText(g, string.Format(fmt, sr.Min, sr.Unit), _fSmall, ColTextSec, new RectangleF(availW - Sf(185f), y, Sf(82f), rowH), StringAlignment.Far);
-                    DrawText(g, string.Format(fmt, sr.Max, sr.Unit), _fSmall, ColTextBody, new RectangleF(availW - Sf(96f), y, Sf(82f), rowH), StringAlignment.Far);
+                    DrawText(g, Loc.F(fmt, sr.Value, sr.Unit), _fBtn, valCol, new RectangleF(availW - Sf(275f), y, Sf(85f), rowH), StringAlignment.Far);
+                    DrawText(g, Loc.F(fmt, sr.Min, sr.Unit), _fSmall, ColTextSec, new RectangleF(availW - Sf(185f), y, Sf(82f), rowH), StringAlignment.Far);
+                    DrawText(g, Loc.F(fmt, sr.Max, sr.Unit), _fSmall, ColTextBody, new RectangleF(availW - Sf(96f), y, Sf(82f), rowH), StringAlignment.Far);
                 }
                 y += rowH + Sf(4f);
             }
@@ -662,8 +665,8 @@ namespace CorePulse
                         DrawText(g, f.HardwareName, _fSub, ColTextSec, new RectangleF(fr.X + Sf(14f), fr.Y + Sf(30f), Sf(260f), Sf(17f)), StringAlignment.Near);
 
                         // Live RPM & Duty readout
-                        string rpmStr = f.CurrentRpm >= 0f ? string.Format("{0:0} RPM", f.CurrentRpm) : "-- RPM";
-                        string dutyStr = f.CurrentDutyPct >= 0f ? string.Format("{0:0}%", f.CurrentDutyPct) : "--%";
+                        string rpmStr = f.CurrentRpm >= 0f ? Loc.F("{0:0} RPM", f.CurrentRpm) : "-- RPM";
+                        string dutyStr = f.CurrentDutyPct >= 0f ? Loc.F("{0:0}%", f.CurrentDutyPct) : "--%";
                         DrawText(g, rpmStr, _fMetric, ColCyan, new RectangleF(Sf(290f), fr.Y + Sf(8f), Sf(110f), Sf(22f)), StringAlignment.Near);
                         DrawText(g, T("Duty: ", "Hız: ", "转速: ") + dutyStr, _fSub, ColTextBody, new RectangleF(Sf(290f), fr.Y + Sf(32f), Sf(110f), Sf(17f)), StringAlignment.Near);
 
@@ -715,7 +718,7 @@ namespace CorePulse
 
             float liveTemp = s.CpuTempC > 1f ? Math.Max(s.CpuTempC, s.GpuTempC > 1f ? s.GpuTempC * 0.9f : 0f) : (s.GpuTempC > 1f ? s.GpuTempC : 55f);
             int targetDuty = FanController.EvaluateCurve(liveTemp, Settings.CurveTemps, Settings.CurveDuties);
-            DrawText(g, string.Format(T("Live Temp: {0:0}°C  →  Target Curve: {1}%", "Canlı Isı: {0:0}°C  →  Hedef Hız: %{1}", "当前温度：{0:0}°C  →  目标转速：{1}%"), liveTemp, targetDuty),
+            DrawText(g, Loc.F(T("Live Temp: {0:0}°C  →  Target Curve: {1}%", "Canlı Isı: {0:0}°C  →  Hedef Hız: %{1}", "当前温度：{0:0}°C  →  目标转速：{1}%"), liveTemp, targetDuty),
                 _fBtn, ColEmerald, new RectangleF(card.Right - Sf(300f), card.Y + Sf(8f), Sf(286f), Sf(19f)), StringAlignment.Far);
 
             RectangleF plot = new RectangleF(card.X + Sf(44f), card.Y + Sf(34f), card.Width - Sf(60f), Sf(104f));
@@ -776,7 +779,7 @@ namespace CorePulse
                 DrawPillBtn(g, bM, "-", IsHov("curve_dec", i), false, true);
                 AddZone(bM, "curve_dec", i);
 
-                DrawText(g, string.Format("{0}°→{1}%", Settings.CurveTemps[i], Settings.CurveDuties[i]), _fSmall, ColTextBody,
+                DrawText(g, Loc.F("{0}°→{1}%", Settings.CurveTemps[i], Settings.CurveDuties[i]), _fSmall, ColTextBody,
                     new RectangleF(bM.Right + Sf(2f), ctrlY, stepW - Sf(60f), Sf(23f)), StringAlignment.Center);
 
                 RectangleF bP = new RectangleF(sx + stepW - Sf(32f), ctrlY, Sf(24f), Sf(23f));
@@ -810,19 +813,19 @@ namespace CorePulse
             AddZone(bTog, "hud_toggle", null);
             y += Sf(72f);
 
-            // Middle Split: Left = 6-Corner Monitor Preview Picker | Right = Style & Presets
+            // Middle Split: Left = 6-Corner Monitor Preview + Target Display | Right = Style, Presets & System Behavior
             float gap = Sf(12f);
             float leftW = availW * 0.46f;
             float rightW = availW - leftW - gap;
-            float midH = Sf(168f);
+            float midH = Sf(198f);
 
-            // Left: Visual Monitor 6-Position Picker
+            // Left: Visual Monitor 6-Position Picker + Multi-Monitor Target Selector
             RectangleF posCard = new RectangleF(0, y, leftW, midH);
             DrawBox(g, posCard, Sf(10f), ColCard, ColBorder);
-            DrawText(g, T("SCREEN POSITION (CLICK ANY CORNER)", "EKRAN KONUMU (İSTEDİĞİN KÖŞEYİ SEÇ)", "屏幕位置（点击任意区域定位）"),
+            DrawText(g, T("SCREEN POSITION & TARGET MONITOR", "EKRAN KONUMU VE HEDEF MONİTÖR", "屏幕位置与目标显示器"),
                 _fSec, ColCyan, new RectangleF(posCard.X + Sf(14f), posCard.Y + Sf(10f), posCard.Width - Sf(28f), Sf(18f)), StringAlignment.Near);
 
-            RectangleF mon = new RectangleF(posCard.X + Sf(16f), posCard.Y + Sf(34f), posCard.Width - Sf(32f), midH - Sf(48f));
+            RectangleF mon = new RectangleF(posCard.X + Sf(14f), posCard.Y + Sf(34f), posCard.Width - Sf(28f), Sf(118f));
             DrawBox(g, mon, Sf(8f), Color.FromArgb(12, 16, 23), Color.FromArgb(52, 64, 82));
 
             string[] posNames = new string[]
@@ -849,13 +852,45 @@ namespace CorePulse
                 AddZone(zr, "hud_pos", anc);
             }
 
-            // Right: Style, Opacity, Size & Quick Presets
+            // Multi-Monitor Target Display Selector Row
+            int scrCount = DemoMode ? 2 : Math.Max(1, Screen.AllScreens.Length);
+            int maxMonBtns = Math.Min(3, scrCount); // Primary + up to 3 displays
+            float monY = posCard.Y + Sf(161f);
+            float monH = Sf(25f);
+            if (scrCount <= 1)
+            {
+                Screen prim = Screen.PrimaryScreen;
+                string primLbl = prim != null
+                    ? Loc.F(T("Monitor: Primary ({0}×{1})", "Monitör: Ana Ekran ({0}×{1})", "目标屏幕：主显示器 ({0}×{1})"), prim.Bounds.Width, prim.Bounds.Height)
+                    : T("Monitor: Primary", "Monitör: Ana Ekran", "目标屏幕：主显示器");
+                RectangleF mr = new RectangleF(posCard.X + Sf(14f), monY, posCard.Width - Sf(28f), monH);
+                DrawPillBtn(g, mr, primLbl, IsHov("hud_monitor", 0), true, true);
+                AddZone(mr, "hud_monitor", 0);
+            }
+            else
+            {
+                int totalBtns = 1 + maxMonBtns;
+                float mGap2 = Sf(6f);
+                float mw2 = (posCard.Width - Sf(28f) - mGap2 * (totalBtns - 1)) / totalBtns;
+                for (int i = 0; i < totalBtns; i++)
+                {
+                    RectangleF mr = new RectangleF(posCard.X + Sf(14f) + i * (mw2 + mGap2), monY, mw2, monH);
+                    string lbl = i == 0
+                        ? T("Primary", "Ana Ekran", "主屏")
+                        : Loc.F(T("Display {0}", "Ekran {0}", "屏幕 {0}"), i);
+                    bool act = Settings.OverlayMonitorIndex == i;
+                    DrawPillBtn(g, mr, lbl, IsHov("hud_monitor", i), act, true);
+                    AddZone(mr, "hud_monitor", i);
+                }
+            }
+
+            // Right: Style, Opacity, Size, Presets & System Tray / Startup Behavior
             RectangleF styCard = new RectangleF(leftW + gap, y, rightW, midH);
             DrawBox(g, styCard, Sf(10f), ColCard, ColBorder);
             float sx = styCard.X + Sf(14f);
             float sy = styCard.Y + Sf(10f);
 
-            DrawText(g, T("STYLE, OPACITY & QUICK PRESETS", "TASARIM, SAYDAMLIK VE HAZIR PROFİLLER", "样式、透明度与快捷方案"),
+            DrawText(g, T("STYLE, OPACITY, PRESETS & TRAY BEHAVIOR", "TASARIM, SAYDAMLIK, PROFİLLER VE SİSTEM TEPSİSİ", "样式、透明度、快捷方案与托盘行为"),
                 _fSec, ColCyan, new RectangleF(sx, sy, rightW - Sf(28f), Sf(18f)), StringAlignment.Near);
             sy += Sf(24f);
 
@@ -878,7 +913,7 @@ namespace CorePulse
                 DrawPillBtn(g, or, opac[i] + "%", IsHov("hud_opacity", opac[i]), Math.Abs(Settings.OverlayOpacity - opac[i]) <= 5, true);
                 AddZone(or, "hud_opacity", opac[i]);
             }
-            sy += Sf(32f);
+            sy += Sf(31f);
 
             // Size pills: Compact / Normal / Large
             string[] szLbl = new string[] { T("Compact", "Küçük", "紧凑"), T("Normal", "Normal", "标准"), T("Large", "Büyük", "大号") };
@@ -889,7 +924,7 @@ namespace CorePulse
                 DrawPillBtn(g, sr, szLbl[i], IsHov("hud_scale", i), Settings.OverlayScale == i, true);
                 AddZone(sr, "hud_scale", i);
             }
-            sy += Sf(32f);
+            sy += Sf(31f);
 
             // Quick Gamer Presets
             string[] pIds = new string[] { "minimal", "gamer", "thermal" };
@@ -900,6 +935,20 @@ namespace CorePulse
                 DrawPillBtn(g, pr, pLbl[i], IsHov("hud_preset", pIds[i]), false, true);
                 AddZone(pr, "hud_preset", pIds[i]);
             }
+            sy += Sf(31f);
+
+            // System Behavior Toggles: Minimize to Tray & Start with Windows
+            RectangleF bTray = new RectangleF(sx, sy, bw2, Sf(25f));
+            DrawPillBtn(g, bTray,
+                (Settings.MinimizeToTray ? "✓ " : "○ ") + T("Close to Tray", "Tepsiye Küçült", "关闭时驻留托盘"),
+                IsHov("toggle_tray", null), Settings.MinimizeToTray, true);
+            AddZone(bTray, "toggle_tray", null);
+
+            RectangleF bAutoStart = new RectangleF(bTray.Right + Sf(8f), sy, bw2, Sf(25f));
+            DrawPillBtn(g, bAutoStart,
+                (Settings.StartWithWindows ? "✓ " : "○ ") + T("Start with Windows", "Windows ile Başlat", "开机自启动"),
+                IsHov("toggle_startup", null), Settings.StartWithWindows, true);
+            AddZone(bAutoStart, "toggle_startup", null);
 
             y += midH + Sf(14f);
 
@@ -1081,12 +1130,16 @@ namespace CorePulse
         private readonly System.Windows.Forms.Timer _pollTimer;
         private readonly Icon _appIcon;
         private readonly List<HitZone> _chromeZones = new List<HitZone>();
+        private NotifyIcon _trayIcon;
+        private ContextMenuStrip _trayMenu;
 
         private float _scale = 1.0f;
         private int _activeTab;
         private string _hoverKey = "";
         private volatile bool _polling;
         private bool _hotkeyRegistered;
+        private bool _forceExit;
+        private bool _initialHideDone;
 
         private Font _fBrand;
         private Font _fSmallPill;
@@ -1104,6 +1157,12 @@ namespace CorePulse
                 _settings.OverlayEnabled = _cfg.ShowDemoOverlay;
                 _settings.FanProfile = FanProfileMode.Balanced;
                 FanController.ApplyPresetToSettings(_settings, FanProfileMode.Balanced);
+                _settings.MinimizeToTray = true;
+                _settings.StartWithWindows = false;
+            }
+            else
+            {
+                _settings.StartWithWindows = WinNative.IsStartupEnabled();
             }
             _activeTab = _cfg.InitialTab;
 
@@ -1119,14 +1178,20 @@ namespace CorePulse
             _engine.Initialize(_cfg.DemoMode);
 
             _fanCtrl = new FanController();
+            _fanCtrl.RestoreSavedSettingsOnStartup(_settings, _engine.Latest.Fans, _cfg.DemoMode);
+            _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
+
             _hud = new OverlayHudForm();
 
             _content = new PulseContentPanel();
+            _content.DemoMode = _cfg.DemoMode;
             _content.Settings = _settings;
             _content.Engine = _engine;
             _content.Snap = _engine.Latest;
             _content.ActionInvoked += OnContentAction;
             Controls.Add(_content);
+
+            if (!_cfg.DemoMode) InitTrayIcon();
 
             UpdateWindowTitle();
             UpdateDpiScale(GetInitialDpi());
@@ -1140,6 +1205,108 @@ namespace CorePulse
 
             if (_settings.OverlayEnabled)
                 ShowOrHideHud(true);
+        }
+
+        private void InitTrayIcon()
+        {
+            try
+            {
+                _trayMenu = new ContextMenuStrip();
+                _trayIcon = new NotifyIcon();
+                _trayIcon.Icon = _appIcon ?? SystemIcons.Application;
+                _trayIcon.Text = "CorePulse v1.1";
+                _trayIcon.ContextMenuStrip = _trayMenu;
+                _trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+                RebuildTrayMenu();
+                UpdateTrayTooltip(_engine.Latest);
+                _trayIcon.Visible = true;
+            }
+            catch { }
+        }
+
+        private void RebuildTrayMenu()
+        {
+            if (_trayMenu == null) return;
+            while (_trayMenu.Items.Count > 0)
+            {
+                ToolStripItem old = _trayMenu.Items[0];
+                _trayMenu.Items.RemoveAt(0);
+                old.Dispose();
+            }
+
+            ToolStripMenuItem mShow = new ToolStripMenuItem(T("Show CorePulse", "CorePulse'ı Göster", "显示 CorePulse 主界面"));
+            mShow.Click += delegate { RestoreFromTray(); };
+            _trayMenu.Items.Add(mShow);
+
+            ToolStripMenuItem mHud = new ToolStripMenuItem(T("Always On Top HUD (Ctrl+Shift+O)", "Her Zaman Üstte HUD (Ctrl+Shift+O)", "置顶悬浮窗 HUD (Ctrl+Shift+O)"));
+            mHud.Checked = _settings.OverlayEnabled;
+            mHud.Click += delegate { ToggleOverlay(); };
+            _trayMenu.Items.Add(mHud);
+
+            _trayMenu.Items.Add(new ToolStripSeparator());
+
+            FanProfileMode[] modes = new FanProfileMode[] { FanProfileMode.BiosAuto, FanProfileMode.Silent, FanProfileMode.Balanced, FanProfileMode.Turbo };
+            string[] labels = new string[]
+            {
+                T("Fan: BIOS Auto", "Fan: BIOS Otomatik", "风扇：BIOS 自动"),
+                T("Fan: Silent", "Fan: Sessiz", "风扇：静音模式"),
+                T("Fan: Balanced", "Fan: Dengeli", "风扇：均衡模式"),
+                T("Fan: Turbo", "Fan: Turbo", "风扇：强冷模式")
+            };
+            for (int i = 0; i < modes.Length; i++)
+            {
+                FanProfileMode targetMode = modes[i];
+                ToolStripMenuItem mf = new ToolStripMenuItem(labels[i]);
+                mf.Checked = (_settings.FanProfile == targetMode);
+                mf.Click += delegate
+                {
+                    _fanCtrl.ApplyGlobalProfile(_settings, _engine.Latest.Fans, targetMode, _cfg.DemoMode);
+                    _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
+                    if (!_cfg.DemoMode) _settings.Save();
+                    RebuildTrayMenu();
+                    _content.Invalidate();
+                };
+                _trayMenu.Items.Add(mf);
+            }
+
+            _trayMenu.Items.Add(new ToolStripSeparator());
+
+            ToolStripMenuItem mExit = new ToolStripMenuItem(T("Exit & Restore BIOS Fans", "Çıkış (Fanları BIOS'a Döndür)", "退出并恢复 BIOS 风扇"));
+            mExit.Click += delegate { _forceExit = true; Close(); };
+            _trayMenu.Items.Add(mExit);
+        }
+
+        private void UpdateTrayTooltip(TelemetrySnapshot s)
+        {
+            if (_trayIcon == null || s == null) return;
+            try
+            {
+                string cpu = s.CpuTempC > 0f ? Loc.F("CPU {0:0}°C", s.CpuTempC) : Loc.F("CPU {0:0}%", s.CpuLoadPct);
+                string gpu = s.GpuTempC > 0f ? Loc.F("GPU {0:0}°C", s.GpuTempC) : "GPU --";
+                string tip = s.Fps > 0.5f
+                    ? Loc.F("CorePulse · {0} · {1} · {2:0} FPS", cpu, gpu, s.Fps)
+                    : Loc.F("CorePulse · {0} · {1}", cpu, gpu);
+                if (tip.Length > 63) tip = tip.Substring(0, 63);
+                _trayIcon.Text = tip;
+            }
+            catch { }
+        }
+
+        private void RestoreFromTray()
+        {
+            Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (_cfg.StartMinimized && !_cfg.DemoMode && !_initialHideDone)
+            {
+                _initialHideDone = true;
+                Hide();
+            }
         }
 
         private string Lang { get { return _settings.Language ?? "en"; } }
@@ -1249,10 +1416,11 @@ namespace CorePulse
                         BeginInvoke((MethodInvoker)delegate
                         {
                             _content.Snap = snap;
-                            _content.Invalidate();
+                            if (Visible) _content.Invalidate();
                             if (_settings.OverlayEnabled)
                                 _hud.UpdateHud(_settings, snap, _scale);
-                            Invalidate();
+                            UpdateTrayTooltip(snap);
+                            if (Visible) Invalidate();
                         });
                     }
                 }
@@ -1275,6 +1443,7 @@ namespace CorePulse
             {
                 if (_hud.Visible) _hud.Hide();
             }
+            RebuildTrayMenu();
             _content.Invalidate();
             Invalidate();
         }
@@ -1297,6 +1466,7 @@ namespace CorePulse
             if (!_cfg.DemoMode) _settings.Save();
             RebuildFonts();
             UpdateWindowTitle();
+            RebuildTrayMenu();
             _content.Configure(_scale, Lang, _activeTab);
             RefreshHudIfVisible();
         }
@@ -1313,7 +1483,7 @@ namespace CorePulse
         {
             if (key == "elevate")
             {
-                if (!_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) Close();
+                if (!_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) { _forceExit = true; Close(); }
             }
             else if (key == "open_pawnio")
             {
@@ -1334,6 +1504,7 @@ namespace CorePulse
                 _fanCtrl.ApplyGlobalProfile(_settings, _engine.Latest.Fans, (FanProfileMode)payload, _cfg.DemoMode);
                 _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
                 if (!_cfg.DemoMode) _settings.Save();
+                RebuildTrayMenu();
                 _content.Invalidate();
             }
             else if (key == "curve_inc" && payload is int)
@@ -1343,6 +1514,7 @@ namespace CorePulse
                 _settings.FanProfile = FanProfileMode.Custom;
                 _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
                 if (!_cfg.DemoMode) _settings.Save();
+                RebuildTrayMenu();
                 _content.Invalidate();
             }
             else if (key == "curve_dec" && payload is int)
@@ -1352,6 +1524,7 @@ namespace CorePulse
                 _settings.FanProfile = FanProfileMode.Custom;
                 _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
                 if (!_cfg.DemoMode) _settings.Save();
+                RebuildTrayMenu();
                 _content.Invalidate();
             }
             else if (key == "fan_mode_0" || key == "fan_mode_1" || key == "fan_mode_2")
@@ -1360,7 +1533,9 @@ namespace CorePulse
                 if (fc != null)
                 {
                     fc.Mode = key == "fan_mode_0" ? 0 : (key == "fan_mode_1" ? 1 : 2);
+                    _settings.SavedFanModes[fc.Id] = fc.Mode;
                     _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
+                    if (!_cfg.DemoMode) _settings.Save();
                     _content.Invalidate();
                 }
             }
@@ -1371,16 +1546,36 @@ namespace CorePulse
                 {
                     fc.ManualDutyPct = FanController.ClampDuty(fc.ManualDutyPct + (key == "fan_inc" ? 5 : -5));
                     fc.Mode = 1;
+                    _settings.SavedFanModes[fc.Id] = 1;
+                    _settings.SavedFanManuals[fc.Id] = fc.ManualDutyPct;
                     _fanCtrl.Tick(_settings, _engine.Latest, _cfg.DemoMode);
+                    if (!_cfg.DemoMode) _settings.Save();
                     _content.Invalidate();
                 }
             }
             else if (key == "hud_toggle") ToggleOverlay();
             else if (key == "hud_pos" && payload is OverlayAnchor) { _settings.OverlayPosition = (OverlayAnchor)payload; RefreshHudIfVisible(); }
+            else if (key == "hud_monitor" && payload is int) { _settings.OverlayMonitorIndex = (int)payload; RefreshHudIfVisible(); }
             else if (key == "hud_layout" && payload is bool) { _settings.OverlayHorizontal = (bool)payload; RefreshHudIfVisible(); }
             else if (key == "hud_opacity" && payload is int) { _settings.OverlayOpacity = (int)payload; RefreshHudIfVisible(); }
             else if (key == "hud_scale" && payload is int) { _settings.OverlayScale = (int)payload; RefreshHudIfVisible(); }
             else if (key == "hud_preset" && payload is string) { _settings.ApplyHudPreset((string)payload); RefreshHudIfVisible(); }
+            else if (key == "toggle_tray")
+            {
+                _settings.MinimizeToTray = !_settings.MinimizeToTray;
+                if (!_cfg.DemoMode) _settings.Save();
+                _content.Invalidate();
+            }
+            else if (key == "toggle_startup")
+            {
+                if (_cfg.DemoMode) _settings.StartWithWindows = !_settings.StartWithWindows;
+                else
+                {
+                    WinNative.SetStartupEnabled(!_settings.StartWithWindows);
+                    _settings.StartWithWindows = WinNative.IsStartupEnabled();
+                }
+                _content.Invalidate();
+            }
             else if (key == "hud_metric" && payload is string)
             {
                 string mk = (string)payload;
@@ -1439,7 +1634,7 @@ namespace CorePulse
                     else if (k == "tab_2") SwitchTab(2);
                     else if (k == "tab_3") SwitchTab(3);
                     else if (k == "top_hud") ToggleOverlay();
-                    else if (k == "elevate") { if (!_engine.Latest.IsAdmin && !_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) Close(); }
+                    else if (k == "elevate") { if (!_engine.Latest.IsAdmin && !_cfg.DemoMode && WinNative.RestartAsAdministrator("--tab " + _activeTab)) { _forceExit = true; Close(); } }
                     break;
                 }
             }
@@ -1531,9 +1726,9 @@ namespace CorePulse
             float fy = ClientSize.Height - Sf(30f);
             using (Pen dp = new Pen(ColDivider, 1f)) g.DrawLine(dp, 0, fy, w, fy);
             string foot = T(
-                "CorePulse v1.0 · Anti-Cheat Safe ETW FPS · Thermal Safety Guard ≥88°C · Fans auto-restore to BIOS on exit.",
-                "CorePulse v1.0 · Anti-Cheat Güvenli ETW FPS · Termal Koruma ≥88°C · Çıkışta fanlar otomatik BIOS moduna döner.",
-                "CorePulse v1.0 · 零注入防封号 ETW 帧率 · ≥88°C 高温强制满转保护 · 退出软件自动恢复 BIOS 默认温控。");
+                "CorePulse v1.1 · Anti-Cheat Safe DXGI/D3D9 ETW FPS · Thermal Guard ≥88°C · Tray & BIOS Auto-Restore on Exit.",
+                "CorePulse v1.1 · Anti-Cheat Güvenli DXGI/D3D9 ETW FPS · Termal Koruma ≥88°C · Sistem Tepsisi ve Çıkışta BIOS Modu.",
+                "CorePulse v1.1 · 零注入防封号 DXGI/D3D9 ETW 帧率 · ≥88°C 高温保护 · 系统托盘驻留与退出自动恢复 BIOS 温控。");
             DrawStr(g, foot, _fStatus, ColTextMuted, new RectangleF(pad, fy + Sf(4f), w - pad * 2f, Sf(22f)), StringAlignment.Near);
         }
 
@@ -1587,7 +1782,15 @@ namespace CorePulse
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (!_forceExit && !_cfg.DemoMode && _settings.MinimizeToTray && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                return;
+            }
             if (_pollTimer != null) { _pollTimer.Stop(); _pollTimer.Dispose(); }
+            if (_trayIcon != null) { try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { } _trayIcon = null; }
+            if (_trayMenu != null) { try { _trayMenu.Dispose(); } catch { } _trayMenu = null; }
             if (_hotkeyRegistered && IsHandleCreated) WinNative.UnregisterHotKey(Handle, WinNative.HOTKEY_TOGGLE_HUD);
             try { _fanCtrl.RestoreAllToBiosAuto(_engine.Latest != null ? _engine.Latest.Fans : null, _cfg.DemoMode); } catch { }
             try { if (_hud != null && !_hud.IsDisposed) _hud.Close(); } catch { }

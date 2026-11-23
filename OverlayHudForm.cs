@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Windows.Forms;
 
 namespace CorePulse
 {
-    // True Click-Through, Zero-Focus-Stealing, Always-On-Top Gaming HUD Overlay
+    // True 32-bit Per-Pixel Alpha (UpdateLayeredWindow), Click-Through, Zero-Focus-Stealing,
+    // Multi-Monitor Always-On-Top Gaming HUD Overlay — zero jagged TransparencyKey edges!
     internal sealed class OverlayHudForm : Form
     {
         private sealed class HudEntry
@@ -18,9 +20,9 @@ namespace CorePulse
             public Color ValueColor;
         }
 
-        private static readonly Color ColHudBg = Color.FromArgb(14, 18, 25);
-        private static readonly Color ColHudBorder = Color.FromArgb(52, 66, 86);
-        private static readonly Color ColSep = Color.FromArgb(40, 50, 66);
+        private static readonly Color ColHudBgBase = Color.FromArgb(12, 16, 23);
+        private static readonly Color ColHudBorder = Color.FromArgb(62, 78, 102);
+        private static readonly Color ColSep = Color.FromArgb(46, 58, 76);
         private static readonly Color ColLabel = Color.FromArgb(148, 163, 184);
         private static readonly Color ColText = Color.FromArgb(241, 245, 249);
         private static readonly Color ColCyan = Color.FromArgb(56, 189, 248);
@@ -32,10 +34,6 @@ namespace CorePulse
         private CorePulseSettings _cfg = new CorePulseSettings();
         private TelemetrySnapshot _snap = new TelemetrySnapshot();
         private float _dpiScale = 1.0f;
-        private readonly List<HudEntry> _entries = new List<HudEntry>();
-
-        private Font _fLabel;
-        private Font _fVal;
 
         public OverlayHudForm()
         {
@@ -43,17 +41,6 @@ namespace CorePulse
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
-            BackColor = Color.FromArgb(1, 2, 3);
-            TransparencyKey = Color.FromArgb(1, 2, 3);
-            DoubleBuffered = true;
-
-            SetStyle(
-                ControlStyles.AllPaintingInWmPaint |
-                ControlStyles.OptimizedDoubleBuffer |
-                ControlStyles.UserPaint,
-                true);
-
-            RebuildFonts();
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -72,29 +59,6 @@ namespace CorePulse
             }
         }
 
-        private float ScaleFactor()
-        {
-            float sizeMult = _cfg.OverlayScale == 0 ? 0.86f : (_cfg.OverlayScale == 2 ? 1.18f : 1.0f);
-            return _dpiScale * sizeMult;
-        }
-
-        private float Sf(float v) { return v * ScaleFactor(); }
-        private float PtToPx(float pt) { return pt * (96f / 72f) * ScaleFactor(); }
-
-        private void RebuildFonts()
-        {
-            DisposeFonts();
-            string fam = Loc.FontFamily(_cfg != null ? _cfg.Language : "en");
-            _fLabel = new Font(fam, PtToPx(7.4f), FontStyle.Bold, GraphicsUnit.Pixel);
-            _fVal = new Font("Segoe UI", PtToPx(9.4f), FontStyle.Bold, GraphicsUnit.Pixel);
-        }
-
-        private void DisposeFonts()
-        {
-            if (_fLabel != null) { _fLabel.Dispose(); _fLabel = null; }
-            if (_fVal != null) { _fVal.Dispose(); _fVal = null; }
-        }
-
         public static Color TempColor(float c)
         {
             if (c < 0f) return ColLabel;
@@ -103,19 +67,39 @@ namespace CorePulse
             return ColEmerald;
         }
 
+        public static Screen ResolveTargetScreen(int monitorIndex)
+        {
+            Screen[] all = Screen.AllScreens;
+            if (monitorIndex > 0 && all != null && monitorIndex <= all.Length)
+                return all[monitorIndex - 1];
+            return Screen.PrimaryScreen ?? (all != null && all.Length > 0 ? all[0] : null);
+        }
+
         public void UpdateHud(CorePulseSettings cfg, TelemetrySnapshot snap, float dpiScale)
         {
-            bool fontDirty = (_cfg == null || _cfg.OverlayScale != cfg.OverlayScale || _cfg.Language != cfg.Language || Math.Abs(_dpiScale - dpiScale) > 0.01f);
-            _cfg = cfg;
+            _cfg = cfg ?? new CorePulseSettings();
             _snap = snap ?? new TelemetrySnapshot();
             _dpiScale = dpiScale > 0.5f ? dpiScale : 1.0f;
-            if (fontDirty) RebuildFonts();
 
-            Opacity = Math.Max(0.55, Math.Min(1.0, cfg.OverlayOpacity / 100.0));
-            BuildEntries();
-            ResizeAndPosition();
-            EnsureTopMost();
-            Invalidate();
+            using (Bitmap bmp = RenderHudBitmap(_cfg, _snap, _dpiScale))
+            {
+                Point dst = ComputeTargetPosition(bmp.Width, bmp.Height);
+                if (IsHandleCreated)
+                {
+                    PushLayeredBitmap(bmp, dst);
+                    EnsureTopMost();
+                }
+                else
+                {
+                    SetBounds(dst.X, dst.Y, bmp.Width, bmp.Height);
+                }
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            UpdateHud(_cfg, _snap, _dpiScale);
         }
 
         public void EnsureTopMost()
@@ -130,37 +114,95 @@ namespace CorePulse
             }
         }
 
-        private void BuildEntries()
+        private Point ComputeTargetPosition(int w, int h)
         {
-            _entries.Clear();
-            TelemetrySnapshot s = _snap;
-            CorePulseSettings c = _cfg;
+            Screen sc = ResolveTargetScreen(_cfg.OverlayMonitorIndex);
+            Rectangle bounds = sc != null ? sc.Bounds : new Rectangle(0, 0, 1920, 1080);
+            int margin = (int)Math.Round(_cfg.OverlayMargin * _dpiScale);
+
+            int x = bounds.Left + margin;
+            int y = bounds.Top + margin;
+
+            if (_cfg.OverlayPosition == OverlayAnchor.TopCenter || _cfg.OverlayPosition == OverlayAnchor.BottomCenter)
+                x = bounds.Left + (bounds.Width - w) / 2;
+            else if (_cfg.OverlayPosition == OverlayAnchor.TopRight || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
+                x = bounds.Right - w - margin;
+
+            if (_cfg.OverlayPosition == OverlayAnchor.BottomLeft || _cfg.OverlayPosition == OverlayAnchor.BottomCenter || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
+            {
+                int workBottom = sc != null ? sc.WorkingArea.Bottom : bounds.Bottom;
+                y = Math.Min(bounds.Bottom, workBottom) - h - margin;
+            }
+
+            // Clamp safely inside target monitor
+            if (x < bounds.Left + 4) x = bounds.Left + 4;
+            if (y < bounds.Top + 4) y = bounds.Top + 4;
+            if (x + w > bounds.Right - 4) x = Math.Max(bounds.Left + 4, bounds.Right - w - 4);
+            if (y + h > bounds.Bottom - 4) y = Math.Max(bounds.Top + 4, bounds.Bottom - h - 4);
+
+            return new Point(x, y);
+        }
+
+        private void PushLayeredBitmap(Bitmap bmp, Point dst)
+        {
+            IntPtr screenDc = WinNative.GetDC(IntPtr.Zero);
+            IntPtr memDc = WinNative.CreateCompatibleDC(screenDc);
+            IntPtr hBitmap = IntPtr.Zero;
+            IntPtr oldBitmap = IntPtr.Zero;
+            try
+            {
+                hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+                oldBitmap = WinNative.SelectObject(memDc, hBitmap);
+
+                WinNative.SIZE size = new WinNative.SIZE(bmp.Width, bmp.Height);
+                WinNative.POINT ptSrc = new WinNative.POINT(0, 0);
+                WinNative.POINT ptDst = new WinNative.POINT(dst.X, dst.Y);
+                WinNative.BLENDFUNCTION blend = new WinNative.BLENDFUNCTION();
+                blend.BlendOp = WinNative.AC_SRC_OVER;
+                blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255; // Per-pixel alpha is baked smoothly into the ARGB bitmap!
+                blend.AlphaFormat = WinNative.AC_SRC_ALPHA;
+
+                WinNative.UpdateLayeredWindow(Handle, screenDc, ref ptDst, ref size, memDc, ref ptSrc, 0, ref blend, WinNative.ULW_ALPHA);
+            }
+            finally
+            {
+                if (oldBitmap != IntPtr.Zero) WinNative.SelectObject(memDc, oldBitmap);
+                if (hBitmap != IntPtr.Zero) WinNative.DeleteObject(hBitmap);
+                WinNative.DeleteDC(memDc);
+                WinNative.ReleaseDC(IntPtr.Zero, screenDc);
+            }
+        }
+
+        private static List<HudEntry> BuildEntries(CorePulseSettings c, TelemetrySnapshot s)
+        {
+            List<HudEntry> list = new List<HudEntry>();
 
             if (c.HudShowFps)
             {
                 string val = s.Fps > 0.5f
-                    ? string.Format("{0:0}  ({1:0.0}ms)", s.Fps, s.FrametimeMs)
+                    ? Loc.F("{0:0} ({1:0.0}ms)", s.Fps, s.FrametimeMs)
                     : (s.FpsEtwActive ? "--" : "ADMIN");
                 Color vc = s.Fps >= 60f ? ColEmerald : (s.Fps >= 30f ? ColAmber : ColLabel);
-                _entries.Add(new HudEntry { Label = "FPS", Value = val, Accent = ColEmerald, ValueColor = vc });
+                list.Add(new HudEntry { Label = "FPS", Value = val, Accent = ColEmerald, ValueColor = vc });
             }
 
             if (c.HudShowFps1Low && s.Fps > 0.5f)
             {
-                _entries.Add(new HudEntry { Label = "1% LOW", Value = string.Format("{0:0}", s.Fps1Low), Accent = ColEmerald, ValueColor = s.Fps1Low >= 45f ? ColText : ColAmber });
+                list.Add(new HudEntry { Label = "1% LOW", Value = Loc.F("{0:0}", s.Fps1Low), Accent = ColEmerald, ValueColor = s.Fps1Low >= 45f ? ColText : ColAmber });
             }
 
             if (c.HudShowCpuTemp || c.HudShowCpuLoad || c.HudShowCpuClockPower)
             {
                 List<string> parts = new List<string>();
-                if (c.HudShowCpuTemp) parts.Add(s.CpuTempC > 0f ? string.Format("{0:0}°C", s.CpuTempC) : "--°C");
-                if (c.HudShowCpuLoad) parts.Add(string.Format("{0:0}%", s.CpuLoadPct));
+                if (c.HudShowCpuTemp) parts.Add(s.CpuTempC > 0f ? Loc.F("{0:0}°C", s.CpuTempC) : "--°C");
+                if (c.HudShowCpuLoad) parts.Add(Loc.F("{0:0}%", s.CpuLoadPct));
                 if (c.HudShowCpuClockPower)
                 {
-                    if (s.CpuClockMhz > 100f) parts.Add(string.Format("{0:0.0}GHz", s.CpuClockMhz / 1000f));
-                    if (s.CpuPowerW > 1f) parts.Add(string.Format("{0:0}W", s.CpuPowerW));
+                    if (s.CpuClockMhz > 100f) parts.Add(Loc.F("{0:0.0}GHz", s.CpuClockMhz / 1000f));
+                    if (s.CpuPowerW > 1f) parts.Add(Loc.F("{0:0}W", s.CpuPowerW));
                 }
-                _entries.Add(new HudEntry
+                list.Add(new HudEntry
                 {
                     Label = "CPU",
                     Value = string.Join(" · ", parts.ToArray()),
@@ -172,19 +214,19 @@ namespace CorePulse
             if (c.HudShowGpuTemp || c.HudShowGpuLoad || c.HudShowGpuVram || c.HudShowGpuFan || c.HudShowGpuPower)
             {
                 List<string> parts = new List<string>();
-                if (c.HudShowGpuTemp) parts.Add(s.GpuTempC > 0f ? string.Format("{0:0}°C", s.GpuTempC) : "--°C");
-                if (c.HudShowGpuLoad && s.GpuLoadPct >= 0f) parts.Add(string.Format("{0:0}%", s.GpuLoadPct));
-                if (c.HudShowGpuVram && s.GpuVramUsedGb >= 0f) parts.Add(string.Format("{0:0.0}GB", s.GpuVramUsedGb));
+                if (c.HudShowGpuTemp) parts.Add(s.GpuTempC > 0f ? Loc.F("{0:0}°C", s.GpuTempC) : "--°C");
+                if (c.HudShowGpuLoad && s.GpuLoadPct >= 0f) parts.Add(Loc.F("{0:0}%", s.GpuLoadPct));
+                if (c.HudShowGpuVram && s.GpuVramUsedGb >= 0f) parts.Add(Loc.F("{0:0.0}GB", s.GpuVramUsedGb));
                 if (c.HudShowGpuFan)
                 {
-                    if (s.GpuFanRpm > 0f) parts.Add(string.Format("{0:0} RPM", s.GpuFanRpm));
-                    else if (s.GpuFanPct >= 0f) parts.Add(string.Format("FAN {0:0}%", s.GpuFanPct));
+                    if (s.GpuFanRpm > 0f) parts.Add(Loc.F("{0:0} RPM", s.GpuFanRpm));
+                    else if (s.GpuFanPct >= 0f) parts.Add(Loc.F("FAN {0:0}%", s.GpuFanPct));
                 }
-                if (c.HudShowGpuPower && s.GpuPowerW > 1f) parts.Add(string.Format("{0:0}W", s.GpuPowerW));
+                if (c.HudShowGpuPower && s.GpuPowerW > 1f) parts.Add(Loc.F("{0:0}W", s.GpuPowerW));
 
                 if (parts.Count > 0)
                 {
-                    _entries.Add(new HudEntry
+                    list.Add(new HudEntry
                     {
                         Label = "GPU",
                         Value = string.Join(" · ", parts.ToArray()),
@@ -196,10 +238,10 @@ namespace CorePulse
 
             if (c.HudShowRam && s.RamTotalGb > 0f)
             {
-                _entries.Add(new HudEntry
+                list.Add(new HudEntry
                 {
                     Label = "RAM",
-                    Value = string.Format("{0:0.0}/{1:0}GB ({2:0}%)", s.RamUsedGb, s.RamTotalGb, s.RamLoadPct),
+                    Value = Loc.F("{0:0.0}/{1:0}GB ({2:0}%)", s.RamUsedGb, s.RamTotalGb, s.RamLoadPct),
                     Accent = ColViolet,
                     ValueColor = s.RamLoadPct >= 88f ? ColAmber : ColText
                 });
@@ -208,146 +250,143 @@ namespace CorePulse
             if (c.HudShowCaseFans)
             {
                 string fVal = s.PrimaryCaseFanRpm > 0f
-                    ? string.Format("{0:0} RPM", s.PrimaryCaseFanRpm)
-                    : (s.GpuFanRpm > 0f ? string.Format("{0:0} RPM", s.GpuFanRpm) : "-- RPM");
-                _entries.Add(new HudEntry { Label = "FAN", Value = fVal, Accent = ColCyan, ValueColor = ColText });
+                    ? Loc.F("{0:0} RPM", s.PrimaryCaseFanRpm)
+                    : (s.GpuFanRpm > 0f ? Loc.F("{0:0} RPM", s.GpuFanRpm) : "-- RPM");
+                list.Add(new HudEntry { Label = "FAN", Value = fVal, Accent = ColCyan, ValueColor = ColText });
             }
 
             if (c.HudShowBoardDiskTemp)
             {
                 List<string> pts = new List<string>();
-                if (s.BoardTempC > 0f) pts.Add(string.Format("MB {0:0}°C", s.BoardTempC));
-                if (s.StorageTempC > 0f) pts.Add(string.Format("SSD {0:0}°C", s.StorageTempC));
+                if (s.BoardTempC > 0f) pts.Add(Loc.F("MB {0:0}°C", s.BoardTempC));
+                if (s.StorageTempC > 0f) pts.Add(Loc.F("SSD {0:0}°C", s.StorageTempC));
                 if (pts.Count == 0) pts.Add("--°C");
-                _entries.Add(new HudEntry { Label = "SYS", Value = string.Join(" · ", pts.ToArray()), Accent = ColAmber, ValueColor = ColText });
+                list.Add(new HudEntry { Label = "SYS", Value = string.Join(" · ", pts.ToArray()), Accent = ColAmber, ValueColor = ColText });
             }
 
             if (c.HudShowNetClock)
             {
-                _entries.Add(new HudEntry
+                list.Add(new HudEntry
                 {
                     Label = "NET",
-                    Value = string.Format("↓{0:0.0} ↑{1:0.0} · {2}", s.NetDownMbps, s.NetUpMbps, DateTime.Now.ToString("HH:mm")),
+                    Value = Loc.F("↓{0:0.0} ↑{1:0.0} · {2}", s.NetDownMbps, s.NetUpMbps, DateTime.Now.ToString("HH:mm")),
                     Accent = ColCyan,
                     ValueColor = ColText
                 });
             }
 
-            // Guarantee at least 1 indicator if user unchecked everything
-            if (_entries.Count == 0)
-            {
-                _entries.Add(new HudEntry { Label = "COREPULSE", Value = string.Format("CPU {0:0}%", s.CpuLoadPct), Accent = ColCyan, ValueColor = ColText });
-            }
+            if (list.Count == 0)
+                list.Add(new HudEntry { Label = "COREPULSE", Value = Loc.F("CPU {0:0}%", s.CpuLoadPct), Accent = ColCyan, ValueColor = ColText });
+
+            return list;
         }
 
-        private void ResizeAndPosition()
+        public static Bitmap RenderHudBitmap(CorePulseSettings c, TelemetrySnapshot s, float dpiScale)
         {
-            int w, h;
-            using (Bitmap tmp = new Bitmap(16, 16))
-            using (Graphics g = Graphics.FromImage(tmp))
+            float sizeMult = c.OverlayScale == 0 ? 0.86f : (c.OverlayScale == 2 ? 1.18f : 1.0f);
+            float sf = (dpiScale > 0.5f ? dpiScale : 1.0f) * sizeMult;
+            string fam = Loc.FontFamily(c.Language);
+
+            List<HudEntry> entries = BuildEntries(c, s);
+
+            using (Font fLabel = new Font(fam, 7.4f * (96f / 72f) * sf, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fVal = new Font("Segoe UI", 9.4f * (96f / 72f) * sf, FontStyle.Bold, GraphicsUnit.Pixel))
             {
-                if (_cfg.OverlayHorizontal)
-                {
-                    float totalW = Sf(18f);
-                    for (int i = 0; i < _entries.Count; i++)
-                    {
-                        float lw = MeasureTight(g, _entries[i].Label, _fLabel).Width;
-                        float vw = MeasureTight(g, _entries[i].Value, _fVal).Width;
-                        totalW += Sf(6f) + lw + Sf(6f) + vw + Sf(16f);
-                    }
-                    w = Math.Max((int)Math.Ceiling(Sf(130f)), (int)Math.Ceiling(totalW));
-                    h = (int)Math.Ceiling(Sf(32f));
-                }
-                else
-                {
-                    float maxLbl = 0f, maxVal = 0f;
-                    for (int i = 0; i < _entries.Count; i++)
-                    {
-                        maxLbl = Math.Max(maxLbl, MeasureTight(g, _entries[i].Label, _fLabel).Width);
-                        maxVal = Math.Max(maxVal, MeasureTight(g, _entries[i].Value, _fVal).Width);
-                    }
-                    w = (int)Math.Ceiling(Sf(30f) + maxLbl + Sf(12f) + maxVal + Sf(14f));
-                    h = (int)Math.Ceiling(Sf(14f) + _entries.Count * Sf(22f));
-                }
-            }
-
-            Rectangle screen = Screen.PrimaryScreen != null ? Screen.PrimaryScreen.Bounds : new Rectangle(0, 0, 1920, 1080);
-            int margin = (int)Math.Round(_cfg.OverlayMargin * _dpiScale);
-            int x = screen.Left + margin;
-            int y = screen.Top + margin;
-
-            if (_cfg.OverlayPosition == OverlayAnchor.TopCenter || _cfg.OverlayPosition == OverlayAnchor.BottomCenter)
-                x = screen.Left + (screen.Width - w) / 2;
-            else if (_cfg.OverlayPosition == OverlayAnchor.TopRight || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
-                x = screen.Right - w - margin;
-
-            if (_cfg.OverlayPosition == OverlayAnchor.BottomLeft || _cfg.OverlayPosition == OverlayAnchor.BottomCenter || _cfg.OverlayPosition == OverlayAnchor.BottomRight)
-                y = screen.Bottom - h - margin - (int)Math.Round(42f * _dpiScale); // clear Windows taskbar
-
-            SetBounds(x, y, w, h);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.Clear(TransparencyKey);
-
-            RectangleF rc = new RectangleF(0.5f, 0.5f, ClientSize.Width - 1.5f, ClientSize.Height - 1.5f);
-            float rad = _cfg.OverlayHorizontal ? Sf(9f) : Sf(10f);
-            using (GraphicsPath gp = Rounded(rc, rad))
-            using (SolidBrush bg = new SolidBrush(ColHudBg))
-            using (Pen bd = new Pen(ColHudBorder, 1.2f))
-            {
-                g.FillPath(bg, gp);
-                g.DrawPath(bd, gp);
-            }
-
-            if (_cfg.OverlayHorizontal)
-            {
-                float x = Sf(10f);
-                for (int i = 0; i < _entries.Count; i++)
-                {
-                    HudEntry it = _entries[i];
-                    if (i > 0)
-                    {
-                        using (Pen sep = new Pen(ColSep, 1f))
-                            g.DrawLine(sep, x - Sf(7f), Sf(7f), x - Sf(7f), ClientSize.Height - Sf(7f));
-                    }
-
-                    using (SolidBrush ab = new SolidBrush(it.Accent))
-                        g.FillRectangle(ab, x, (ClientSize.Height - Sf(12f)) * 0.5f, Sf(2.5f), Sf(12f));
-                    x += Sf(6f);
-
-                    float lw = MeasureTight(g, it.Label, _fLabel).Width + Sf(2f);
-                    DrawTextTight(g, it.Label, _fLabel, ColLabel, new RectangleF(x, 0, lw, ClientSize.Height));
-                    x += lw + Sf(5f);
-
-                    float vw = MeasureTight(g, it.Value, _fVal).Width + Sf(2f);
-                    DrawTextTight(g, it.Value, _fVal, it.ValueColor, new RectangleF(x, 0, vw, ClientSize.Height));
-                    x += vw + Sf(15f);
-                }
-            }
-            else
-            {
+                int w, h;
                 float maxLbl = 0f;
-                for (int i = 0; i < _entries.Count; i++)
-                    maxLbl = Math.Max(maxLbl, MeasureTight(g, _entries[i].Label, _fLabel).Width);
-
-                float y = Sf(7f);
-                float rowH = Sf(22f);
-                for (int i = 0; i < _entries.Count; i++)
+                using (Bitmap tmp = new Bitmap(8, 8))
+                using (Graphics tg = Graphics.FromImage(tmp))
                 {
-                    HudEntry it = _entries[i];
-                    using (SolidBrush ab = new SolidBrush(it.Accent))
-                        g.FillRectangle(ab, Sf(10f), y + Sf(4f), Sf(2.5f), rowH - Sf(8f));
-
-                    DrawTextTight(g, it.Label, _fLabel, ColLabel, new RectangleF(Sf(17f), y, maxLbl + Sf(4f), rowH));
-                    DrawTextTight(g, it.Value, _fVal, it.ValueColor, new RectangleF(Sf(17f) + maxLbl + Sf(10f), y, ClientSize.Width - (Sf(28f) + maxLbl), rowH));
-                    y += rowH;
+                    tg.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    if (c.OverlayHorizontal)
+                    {
+                        float totalW = 11f * sf;
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            float lw = MeasureTight(tg, entries[i].Label, fLabel).Width + 2f * sf;
+                            float vw = MeasureTight(tg, entries[i].Value, fVal).Width + 2f * sf;
+                            totalW += 6.5f * sf + lw + 5f * sf + vw + (i < entries.Count - 1 ? 15f * sf : 12f * sf);
+                        }
+                        w = Math.Max((int)Math.Ceiling(130f * sf), (int)Math.Ceiling(totalW));
+                        h = (int)Math.Ceiling(34f * sf);
+                    }
+                    else
+                    {
+                        float maxVal = 0f;
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            maxLbl = Math.Max(maxLbl, MeasureTight(tg, entries[i].Label, fLabel).Width);
+                            maxVal = Math.Max(maxVal, MeasureTight(tg, entries[i].Value, fVal).Width);
+                        }
+                        w = (int)Math.Ceiling(34f * sf + maxLbl + 14f * sf + maxVal + 14f * sf);
+                        h = (int)Math.Ceiling(16f * sf + entries.Count * 22f * sf);
+                    }
                 }
+
+                // True 32-bit premultiplied ARGB bitmap for glass-smooth per-pixel alpha!
+                Bitmap bmp = new Bitmap(Math.Max(2, w), Math.Max(2, h), PixelFormat.Format32bppPArgb);
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.Clear(Color.Transparent);
+
+                    int bgAlpha = Math.Max(130, Math.Min(245, (int)Math.Round((c.OverlayOpacity / 100.0) * 238.0)));
+                    int bdAlpha = Math.Max(160, Math.Min(255, bgAlpha + 20));
+                    RectangleF rc = new RectangleF(1f, 1f, w - 2.5f, h - 2.5f);
+                    float rad = (c.OverlayHorizontal ? 9f : 10f) * sf;
+
+                    using (GraphicsPath gp = Rounded(rc, rad))
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
+                    using (Pen bd = new Pen(Color.FromArgb(bdAlpha, ColHudBorder), 1.2f))
+                    {
+                        g.FillPath(bg, gp);
+                        g.DrawPath(bd, gp);
+                    }
+
+                    if (c.OverlayHorizontal)
+                    {
+                        float x = 11f * sf;
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            HudEntry it = entries[i];
+                            if (i > 0)
+                            {
+                                using (Pen sep = new Pen(Color.FromArgb(190, ColSep), 1f))
+                                    g.DrawLine(sep, x - 7f * sf, 7f * sf, x - 7f * sf, h - 7f * sf);
+                            }
+
+                            using (SolidBrush ab = new SolidBrush(Color.FromArgb(255, it.Accent)))
+                                g.FillRectangle(ab, x, (h - 13f * sf) * 0.5f, 2.6f * sf, 13f * sf);
+                            x += 6.5f * sf;
+
+                            float lw = MeasureTight(g, it.Label, fLabel).Width + 2f * sf;
+                            DrawTextTight(g, it.Label, fLabel, Color.FromArgb(245, ColLabel), new RectangleF(x, 0, lw, h));
+                            x += lw + 5f * sf;
+
+                            float vw = MeasureTight(g, it.Value, fVal).Width + 2f * sf;
+                            DrawTextTight(g, it.Value, fVal, Color.FromArgb(255, it.ValueColor), new RectangleF(x, 0, vw, h));
+                            x += vw + 15f * sf;
+                        }
+                    }
+                    else
+                    {
+                        float y = 8f * sf;
+                        float rowH = 22f * sf;
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            HudEntry it = entries[i];
+                            using (SolidBrush ab = new SolidBrush(Color.FromArgb(255, it.Accent)))
+                                g.FillRectangle(ab, 11f * sf, y + 4f * sf, 2.6f * sf, rowH - 8f * sf);
+
+                            DrawTextTight(g, it.Label, fLabel, Color.FromArgb(245, ColLabel), new RectangleF(18f * sf, y, maxLbl + 4f * sf, rowH));
+                            DrawTextTight(g, it.Value, fVal, Color.FromArgb(255, it.ValueColor), new RectangleF(18f * sf + maxLbl + 10f * sf, y, w - (28f * sf + maxLbl), rowH));
+                            y += rowH;
+                        }
+                    }
+                }
+                return bmp;
             }
         }
 
@@ -381,12 +420,6 @@ namespace CorePulse
             p.AddArc(r.X, r.Y, d, d, 180f, 90f); p.AddArc(r.Right - d, r.Y, d, d, 270f, 90f);
             p.AddArc(r.Right - d, r.Bottom - d, d, d, 0f, 90f); p.AddArc(r.X, r.Bottom - d, d, d, 90f, 90f);
             p.CloseFigure(); return p;
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing) DisposeFonts();
-            base.Dispose(disposing);
         }
     }
 }

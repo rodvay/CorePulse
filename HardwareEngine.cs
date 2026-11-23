@@ -6,7 +6,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using LibreHardwareMonitor.Hardware;
+using Microsoft.Win32;
 
 namespace CorePulse
 {
@@ -15,7 +15,7 @@ namespace CorePulse
         public string Group; // "CPU", "GPU", "Motherboard", "Memory", "Storage", "Power", "Network"
         public string HardwareName;
         public string Name;
-        public string TypeLabel; // "Temp", "Load", "Clock", "Fan", "Power", "Control", "Data"
+        public string TypeLabel;
         public string Unit;
         public float Value;
         public float Min;
@@ -34,13 +34,12 @@ namespace CorePulse
         public int ManualDutyPct = 55;
         public int Mode; // 0 = BIOS Auto, 1 = Manual, 2 = Curve
 
-        // Live LHM IControl reference (null in demo mode or read-only fan)
-        internal IControl NativeControl;
+        // Typed as object so CorePulse NEVER fails type-loading if lib\LibreHardwareMonitorLib.dll is absent!
+        internal object NativeControl;
     }
 
     internal sealed class TelemetrySnapshot
     {
-        // Hardware inventory
         public string CpuName = "Detecting CPU...";
         public int CpuCores = Environment.ProcessorCount;
         public string GpuName = "Detecting GPU...";
@@ -49,13 +48,11 @@ namespace CorePulse
         public string StorageName = "";
         public string PsuLabel = "";
 
-        // Live CPU metrics (-1 means sensor unavailable / Admin needed)
         public float CpuTempC = -1f;
         public float CpuLoadPct = 0f;
         public float CpuClockMhz = -1f;
         public float CpuPowerW = -1f;
 
-        // Live GPU metrics
         public float GpuTempC = -1f;
         public float GpuHotspotC = -1f;
         public float GpuLoadPct = -1f;
@@ -67,7 +64,6 @@ namespace CorePulse
         public float GpuFanRpm = -1f;
         public float GpuPowerW = -1f;
 
-        // Live RAM / Board / Disk / PSU / Net
         public float RamUsedGb = 0f;
         public float RamTotalGb = 0f;
         public float RamLoadPct = 0f;
@@ -79,17 +75,14 @@ namespace CorePulse
         public float NetDownMbps = 0f;
         public float NetUpMbps = 0f;
 
-        // Live FPS (ETW Zero-Injection)
         public float Fps = 0f;
         public float Fps1Low = 0f;
         public float FrametimeMs = 0f;
         public string ActiveGameProcess = "";
         public bool FpsEtwActive = false;
 
-        // Primary Case / CPU Fan RPM summary
         public float PrimaryCaseFanRpm = -1f;
 
-        // Engine status
         public bool LhmLoaded = false;
         public bool IsAdmin = false;
         public bool PawnIoInstalled = false;
@@ -137,6 +130,320 @@ namespace CorePulse
         }
     }
 
+    // Completely isolated LibreHardwareMonitorLib v0.9.6 bridge.
+    // Never JITted unless LibResolver.IsLhmDllPresent() is true -> zero FileNotFoundException crash when lib\ is absent!
+    internal sealed class LhmBackend : IDisposable
+    {
+        private LibreHardwareMonitor.Hardware.Computer _computer;
+
+        public void Open()
+        {
+            _computer = new LibreHardwareMonitor.Hardware.Computer();
+            _computer.IsCpuEnabled = true;
+            _computer.IsGpuEnabled = true;
+            _computer.IsMemoryEnabled = true;
+            _computer.IsMotherboardEnabled = true;
+            _computer.IsControllerEnabled = true;
+            _computer.IsStorageEnabled = true;
+            _computer.IsNetworkEnabled = true;
+            _computer.IsPsuEnabled = true;
+            _computer.Open();
+        }
+
+        public static void SetFanSoftware(object nativeControl, int pct)
+        {
+            try
+            {
+                LibreHardwareMonitor.Hardware.IControl c = nativeControl as LibreHardwareMonitor.Hardware.IControl;
+                if (c != null) c.SetSoftware(pct);
+            }
+            catch { }
+        }
+
+        public static void SetFanDefault(object nativeControl)
+        {
+            try
+            {
+                LibreHardwareMonitor.Hardware.IControl c = nativeControl as LibreHardwareMonitor.Hardware.IControl;
+                if (c != null) c.SetDefault();
+            }
+            catch { }
+        }
+
+        public void Poll(
+            TelemetrySnapshot snap,
+            Dictionary<string, FanChannelInfo> fanMap,
+            object syncLock,
+            Action<TelemetrySnapshot, string, string, string, string, string, float> addSensor)
+        {
+            if (_computer == null) return;
+            int bestGpuPriority = -1;
+
+            foreach (LibreHardwareMonitor.Hardware.IHardware hw in _computer.Hardware)
+            {
+                try { hw.Update(); } catch { continue; }
+                ProcessNode(hw, snap, fanMap, syncLock, addSensor, ref bestGpuPriority);
+                foreach (LibreHardwareMonitor.Hardware.IHardware sub in hw.SubHardware)
+                {
+                    try { sub.Update(); } catch { continue; }
+                    ProcessNode(sub, snap, fanMap, syncLock, addSensor, ref bestGpuPriority);
+                }
+            }
+        }
+
+        private static int ScoreGpuPriority(LibreHardwareMonitor.Hardware.IHardware hw)
+        {
+            string n = (hw.Name ?? "").ToLowerInvariant();
+            bool looksIntegrated = n.Contains("uhd graphics") || n.Contains("iris") || n.Contains("hd graphics") ||
+                                   n.Contains("radeon(tm) graphics") || n.Contains("vega 8") || n.Contains("vega 7") ||
+                                   n.Contains("microsoft basic");
+            if (hw.HardwareType == LibreHardwareMonitor.Hardware.HardwareType.GpuNvidia) return looksIntegrated ? 40 : 100;
+            if (hw.HardwareType == LibreHardwareMonitor.Hardware.HardwareType.GpuAmd) return looksIntegrated ? 30 : 95;
+            if (hw.HardwareType == LibreHardwareMonitor.Hardware.HardwareType.GpuIntel) return n.Contains("arc") ? 90 : 20;
+            return 10;
+        }
+
+        private static void ProcessNode(
+            LibreHardwareMonitor.Hardware.IHardware hw,
+            TelemetrySnapshot snap,
+            Dictionary<string, FanChannelInfo> fanMap,
+            object syncLock,
+            Action<TelemetrySnapshot, string, string, string, string, string, float> addSensor,
+            ref int bestGpuPriority)
+        {
+            LibreHardwareMonitor.Hardware.HardwareType ht = hw.HardwareType;
+            string grp = MapGroup(ht);
+            bool isGpu = (ht == LibreHardwareMonitor.Hardware.HardwareType.GpuAmd ||
+                          ht == LibreHardwareMonitor.Hardware.HardwareType.GpuNvidia ||
+                          ht == LibreHardwareMonitor.Hardware.HardwareType.GpuIntel);
+
+            bool isPrimaryGpu = false;
+            if (isGpu)
+            {
+                int score = ScoreGpuPriority(hw);
+                if (score >= bestGpuPriority)
+                {
+                    bestGpuPriority = score;
+                    isPrimaryGpu = true;
+                    if (!string.IsNullOrEmpty(hw.Name)) snap.GpuName = hw.Name;
+                    // Reset primary GPU readings when switching to higher-priority discrete GPU
+                    snap.GpuTempC = -1f; snap.GpuHotspotC = -1f; snap.GpuLoadPct = -1f;
+                    snap.GpuClockMhz = -1f; snap.GpuMemClockMhz = -1f; snap.GpuPowerW = -1f;
+                    snap.GpuFanPct = -1f; snap.GpuFanRpm = -1f; snap.GpuVramUsedGb = -1f;
+                }
+            }
+            else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Cpu && !string.IsNullOrEmpty(hw.Name)) snap.CpuName = hw.Name;
+            else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Motherboard && !string.IsNullOrEmpty(hw.Name)) snap.MotherboardName = hw.Name;
+            else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Storage && string.IsNullOrEmpty(snap.StorageName)) snap.StorageName = hw.Name;
+
+            Dictionary<string, float> fanRpms = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (LibreHardwareMonitor.Hardware.ISensor s in hw.Sensors)
+            {
+                if (!s.Value.HasValue || float.IsNaN(s.Value.Value) || float.IsInfinity(s.Value.Value)) continue;
+                float val = s.Value.Value;
+                string sName = s.Name ?? "";
+                LibreHardwareMonitor.Hardware.SensorType st = s.SensorType;
+
+                if (ShouldShow(st, sName, val))
+                {
+                    string tl, unit;
+                    MapType(st, out tl, out unit);
+                    addSensor(snap, grp, hw.Name, sName, tl, unit, val);
+                }
+
+                if (ht == LibreHardwareMonitor.Hardware.HardwareType.Cpu)
+                {
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && val > 1f && val < 130f)
+                    {
+                        if (sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            sName.IndexOf("Tctl", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            sName.IndexOf("Tdie", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            snap.CpuTempC < 0f)
+                            snap.CpuTempC = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Load && sName.Equals("CPU Total", StringComparison.OrdinalIgnoreCase))
+                        snap.CpuLoadPct = val;
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Clock && val > 100f &&
+                             (sName.IndexOf("Average", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Core #1", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        if (snap.CpuClockMhz < 0f || sName.IndexOf("Average", StringComparison.OrdinalIgnoreCase) >= 0)
+                            snap.CpuClockMhz = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Power && val > 0.5f && sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0)
+                        snap.CpuPowerW = val;
+                }
+                else if (isGpu && isPrimaryGpu)
+                {
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && val > 1f && val < 130f)
+                    {
+                        if (sName.IndexOf("Hot Spot", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Hotspot", StringComparison.OrdinalIgnoreCase) >= 0)
+                            snap.GpuHotspotC = val;
+                        else if (sName.IndexOf("Core", StringComparison.OrdinalIgnoreCase) >= 0 || snap.GpuTempC < 0f)
+                            snap.GpuTempC = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Load && (sName.Equals("GPU Core", StringComparison.OrdinalIgnoreCase) || sName.Equals("D3D 3D", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (sName.Equals("GPU Core", StringComparison.OrdinalIgnoreCase) || snap.GpuLoadPct < 0f)
+                            snap.GpuLoadPct = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Clock && val > 10f)
+                    {
+                        if (sName.IndexOf("Core", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuClockMhz = val;
+                        else if (sName.IndexOf("Memory", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuMemClockMhz = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Power && val > 0.5f)
+                    {
+                        if (snap.GpuPowerW < 0f || sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Total", StringComparison.OrdinalIgnoreCase) >= 0)
+                            snap.GpuPowerW = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.SmallData)
+                    {
+                        bool isShared = sName.IndexOf("Shared", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool isDedicated = sName.IndexOf("Dedicated", StringComparison.OrdinalIgnoreCase) >= 0
+                            || sName.IndexOf("GPU Memory", StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (!isShared)
+                        {
+                            if (sName.IndexOf("Memory Used", StringComparison.OrdinalIgnoreCase) >= 0 && (isDedicated || snap.GpuVramUsedGb < 0f))
+                                snap.GpuVramUsedGb = val / 1024f;
+                            else if (sName.IndexOf("Memory Total", StringComparison.OrdinalIgnoreCase) >= 0 && val > 256f && (isDedicated || snap.GpuVramTotalGb <= 0f))
+                                snap.GpuVramTotalGb = val / 1024f;
+                        }
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Fan)
+                    {
+                        snap.GpuFanRpm = val;
+                        fanRpms[sName] = val;
+                    }
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Control)
+                    {
+                        snap.GpuFanPct = val;
+                    }
+                }
+                else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Motherboard || ht == LibreHardwareMonitor.Hardware.HardwareType.SuperIO)
+                {
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && val > 10f && val < 115f && snap.BoardTempC < 0f)
+                        snap.BoardTempC = val;
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Fan)
+                        fanRpms[sName] = val;
+                }
+                else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Storage)
+                {
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && val > 5f && val < 105f && snap.StorageTempC < 0f)
+                        snap.StorageTempC = val;
+                    else if (st == LibreHardwareMonitor.Hardware.SensorType.Load && sName.IndexOf("Total Activity", StringComparison.OrdinalIgnoreCase) >= 0)
+                        snap.DiskLoadPct = Math.Max(snap.DiskLoadPct, val);
+                }
+                else if (ht == LibreHardwareMonitor.Hardware.HardwareType.Psu)
+                {
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.Power && val > 1f)
+                        snap.PsuRealPowerW = Math.Max(snap.PsuRealPowerW, val);
+                }
+            }
+
+            lock (syncLock)
+            {
+                foreach (LibreHardwareMonitor.Hardware.ISensor s in hw.Sensors)
+                {
+                    if (s.SensorType == LibreHardwareMonitor.Hardware.SensorType.Control)
+                    {
+                        string id = s.Identifier != null ? s.Identifier.ToString() : (hw.Name + "/" + s.Name);
+                        FanChannelInfo fc;
+                        if (!fanMap.TryGetValue(id, out fc))
+                        {
+                            fc = new FanChannelInfo();
+                            fc.Id = id;
+                            fc.DisplayName = isGpu ? ("GPU Fan (" + s.Name + ")") : s.Name;
+                            fc.HardwareName = hw.Name;
+                            fc.IsGpuFan = isGpu;
+                            fanMap[id] = fc;
+                        }
+                        fc.HasControl = (s.Control != null);
+                        fc.NativeControl = s.Control;
+                        fc.CurrentDutyPct = s.Value.HasValue ? s.Value.Value : fc.CurrentDutyPct;
+
+                        float rpm;
+                        if (fanRpms.TryGetValue(s.Name, out rpm)) fc.CurrentRpm = rpm;
+                        else if (isGpu && isPrimaryGpu && snap.GpuFanRpm >= 0) fc.CurrentRpm = snap.GpuFanRpm;
+                    }
+                    else if (s.SensorType == LibreHardwareMonitor.Hardware.SensorType.Fan && s.Value.HasValue && s.Value.Value > 0f)
+                    {
+                        bool matched = false;
+                        foreach (KeyValuePair<string, FanChannelInfo> kv in fanMap)
+                        {
+                            if (kv.Value.HardwareName == hw.Name && kv.Value.DisplayName.IndexOf(s.Name, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                kv.Value.CurrentRpm = s.Value.Value;
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (!matched)
+                        {
+                            string id = "rpm:" + hw.Name + "/" + s.Name;
+                            FanChannelInfo fc;
+                            if (!fanMap.TryGetValue(id, out fc))
+                            {
+                                fc = new FanChannelInfo();
+                                fc.Id = id;
+                                fc.DisplayName = isGpu ? "GPU Fan" : s.Name;
+                                fc.HardwareName = hw.Name;
+                                fc.IsGpuFan = isGpu;
+                                fc.HasControl = false;
+                                fanMap[id] = fc;
+                            }
+                            fc.CurrentRpm = s.Value.Value;
+                        }
+                    }
+                }
+            }
+        }
+
+        private static bool ShouldShow(LibreHardwareMonitor.Hardware.SensorType st, string name, float val)
+        {
+            if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && (val <= 1f || val > 130f)) return false;
+            if (st == LibreHardwareMonitor.Hardware.SensorType.Clock && val <= 1f) return false;
+            if (st == LibreHardwareMonitor.Hardware.SensorType.Power && val <= 0.05f) return false;
+            if (st == LibreHardwareMonitor.Hardware.SensorType.Load && name.StartsWith("D3D ", StringComparison.OrdinalIgnoreCase) && name != "D3D 3D") return false;
+            return st == LibreHardwareMonitor.Hardware.SensorType.Temperature ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Load ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Clock ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Fan ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Control ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Power ||
+                   st == LibreHardwareMonitor.Hardware.SensorType.Voltage;
+        }
+
+        private static void MapType(LibreHardwareMonitor.Hardware.SensorType st, out string label, out string unit)
+        {
+            if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature) { label = "Temp"; unit = "°C"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Load) { label = "Load"; unit = "%"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Clock) { label = "Clock"; unit = "MHz"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Fan) { label = "Fan"; unit = "RPM"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Control) { label = "PWM"; unit = "%"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Power) { label = "Power"; unit = "W"; }
+            else if (st == LibreHardwareMonitor.Hardware.SensorType.Voltage) { label = "Volt"; unit = "V"; }
+            else { label = st.ToString(); unit = ""; }
+        }
+
+        private static string MapGroup(LibreHardwareMonitor.Hardware.HardwareType ht)
+        {
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.Cpu) return "CPU";
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.GpuAmd || ht == LibreHardwareMonitor.Hardware.HardwareType.GpuNvidia || ht == LibreHardwareMonitor.Hardware.HardwareType.GpuIntel) return "GPU";
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.Motherboard || ht == LibreHardwareMonitor.Hardware.HardwareType.SuperIO || ht == LibreHardwareMonitor.Hardware.HardwareType.EmbeddedController) return "Motherboard";
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.Memory) return "Memory";
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.Storage) return "Storage";
+            if (ht == LibreHardwareMonitor.Hardware.HardwareType.Psu) return "Power";
+            return "Network";
+        }
+
+        public void Dispose()
+        {
+            try { if (_computer != null) _computer.Close(); } catch { }
+            _computer = null;
+        }
+    }
+
     internal sealed class HardwareEngine : IDisposable
     {
         private readonly object _lock = new object();
@@ -144,7 +451,7 @@ namespace CorePulse
         private readonly Dictionary<string, float> _maxMap = new Dictionary<string, float>();
         private readonly Dictionary<string, FanChannelInfo> _fanMap = new Dictionary<string, FanChannelInfo>();
 
-        private Computer _computer;
+        private IDisposable _lhmObj; // Holds LhmBackend ONLY when LibreHardwareMonitorLib.dll exists!
         private EtwFpsMonitor _fps;
         private PerformanceCounter _cpuFallback;
         private long _lastNetRx;
@@ -161,7 +468,6 @@ namespace CorePulse
         public bool LhmActive { get; private set; }
         public TelemetrySnapshot Latest { get; private set; }
 
-        // 60-sample sparkline ring buffers for Dashboard real-time graphs
         public readonly float[] HistCpuTemp = new float[60];
         public readonly float[] HistGpuTemp = new float[60];
         public readonly float[] HistCpuLoad = new float[60];
@@ -196,46 +502,39 @@ namespace CorePulse
             SampleNetTotals(out _lastNetRx, out _lastNetTx);
             _lastNetTime = DateTime.UtcNow;
 
-            // Start zero-injection ETW DXGI FPS monitor
             _fps = new EtwFpsMonitor();
             _fps.Start();
 
-            // Initialize LibreHardwareMonitorLib v0.9.6 safely (isolated method so missing DLL never crashes startup!)
             if (LibResolver.IsLhmDllPresent())
             {
-                try { OpenLhmSafe(); }
+                try { OpenLhmIsolated(); }
                 catch { LhmActive = false; }
             }
 
             PollOnce();
         }
 
-        private void OpenLhmSafe()
+        private void OpenLhmIsolated()
         {
-            _computer = new Computer();
-            _computer.IsCpuEnabled = true;
-            _computer.IsGpuEnabled = true;
-            _computer.IsMemoryEnabled = true;
-            _computer.IsMotherboardEnabled = true;
-            _computer.IsControllerEnabled = true;
-            _computer.IsStorageEnabled = true;
-            _computer.IsNetworkEnabled = true;
-            _computer.IsPsuEnabled = true;
-            _computer.Open();
+            LhmBackend b = new LhmBackend();
+            b.Open();
+            _lhmObj = b;
             LhmActive = true;
+        }
+
+        private void PollLhmIsolated(TelemetrySnapshot snap)
+        {
+            LhmBackend b = _lhmObj as LhmBackend;
+            if (b != null) b.Poll(snap, _fanMap, _lock, AddSensorReading);
         }
 
         private void ReadStaticWmiInventory()
         {
             try
             {
-                using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Name, NumberOfCores FROM Win32_Processor"))
+                using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Name FROM Win32_Processor"))
                 {
-                    foreach (ManagementObject o in s.Get())
-                    {
-                        _staticCpu = (o["Name"] ?? "").ToString().Trim();
-                        break;
-                    }
+                    foreach (ManagementObject o in s.Get()) { _staticCpu = (o["Name"] ?? "").ToString().Trim(); break; }
                 }
             }
             catch { }
@@ -258,32 +557,35 @@ namespace CorePulse
             }
             catch { }
 
-            try
+            // True 64-bit VRAM detection from Display Class Registry (fixes 4 GB WMI uint32 cap on 8/12/16/24 GB GPUs!)
+            ReadPrimaryGpuFromRegistry(out _staticGpu, out _staticGpuVramGb);
+            if (string.IsNullOrEmpty(_staticGpu))
             {
-                using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Name, AdapterRAM FROM Win32_VideoController"))
+                try
                 {
-                    foreach (ManagementObject o in s.Get())
+                    using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Name, AdapterRAM FROM Win32_VideoController"))
                     {
-                        string n = (o["Name"] ?? "").ToString().Trim();
-                        if (string.IsNullOrEmpty(n)) continue;
-                        if (n.IndexOf("Microsoft Basic", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                        _staticGpu = n;
-                        try
+                        foreach (ManagementObject o in s.Get())
                         {
-                            ulong ramBytes = Convert.ToUInt64(o["AdapterRAM"] ?? 0);
-                            if (ramBytes > 0) _staticGpuVramGb = (float)(ramBytes / (1024.0 * 1024.0 * 1024.0));
+                            string n = (o["Name"] ?? "").ToString().Trim();
+                            if (string.IsNullOrEmpty(n) || n.IndexOf("Microsoft Basic", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                            _staticGpu = n;
+                            try
+                            {
+                                ulong rb = Convert.ToUInt64(o["AdapterRAM"] ?? 0);
+                                if (rb > 0) _staticGpuVramGb = (float)(rb / (1024.0 * 1024.0 * 1024.0));
+                            }
+                            catch { }
+                            break;
                         }
-                        catch { }
-                        break;
                     }
                 }
+                catch { }
             }
-            catch { }
 
             try
             {
-                int slots = 0;
-                int speed = 0;
+                int slots = 0, speed = 0;
                 ulong capBytes = 0;
                 using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Capacity, ConfiguredClockSpeed, Speed FROM Win32_PhysicalMemory"))
                 {
@@ -299,8 +601,8 @@ namespace CorePulse
                 {
                     double gb = Math.Round(capBytes / (1024.0 * 1024.0 * 1024.0));
                     _staticRamSpec = speed > 0
-                        ? string.Format("{0:0} GB ({1}x DIMM · {2} MHz)", gb, slots, speed)
-                        : string.Format("{0:0} GB ({1}x DIMM)", gb, slots);
+                        ? Loc.F("{0:0} GB ({1}x DIMM · {2} MHz)", gb, slots, speed)
+                        : Loc.F("{0:0} GB ({1}x DIMM)", gb, slots);
                 }
             }
             catch { }
@@ -319,13 +621,57 @@ namespace CorePulse
             catch { }
         }
 
+        private static void ReadPrimaryGpuFromRegistry(out string bestName, out float bestVramGb)
+        {
+            bestName = "";
+            bestVramGb = -1f;
+            int bestScore = -1;
+            try
+            {
+                using (RegistryKey cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", false))
+                {
+                    if (cls == null) return;
+                    foreach (string sub in cls.GetSubKeyNames())
+                    {
+                        if (sub.Length != 4) continue;
+                        try
+                        {
+                            using (RegistryKey k = cls.OpenSubKey(sub, false))
+                            {
+                                if (k == null) continue;
+                                string desc = (k.GetValue("DriverDesc") ?? "").ToString().Trim();
+                                if (string.IsNullOrEmpty(desc)) continue;
+                                string low = desc.ToLowerInvariant();
+                                if (low.Contains("microsoft basic") || low.Contains("virtual") || low.Contains("parsec")) continue;
+
+                                float gb = -1f;
+                                object qw = k.GetValue("HardwareInformation.qwMemorySize");
+                                if (qw != null)
+                                {
+                                    ulong bytes = Convert.ToUInt64(qw);
+                                    if (bytes > 0) gb = (float)(bytes / (1024.0 * 1024.0 * 1024.0));
+                                }
+
+                                bool isInteg = low.Contains("uhd graphics") || low.Contains("iris") || low.Contains("radeon(tm) graphics");
+                                int score = (isInteg ? 20 : 100) + (int)Math.Min(50, Math.Max(0, gb * 2f));
+                                if (score > bestScore)
+                                {
+                                    bestScore = score;
+                                    bestName = desc;
+                                    bestVramGb = gb;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
         public void ResetMinMax()
         {
-            lock (_lock)
-            {
-                _minMap.Clear();
-                _maxMap.Clear();
-            }
+            lock (_lock) { _minMap.Clear(); _maxMap.Clear(); }
         }
 
         public TelemetrySnapshot PollOnce()
@@ -341,7 +687,6 @@ namespace CorePulse
             snap.StorageName = _staticStorage;
             snap.GpuVramTotalGb = _staticGpuVramGb;
 
-            // 1. Native RAM via GlobalMemoryStatusEx (always 100% accurate)
             WinNative.MEMORYSTATUSEX mem = new WinNative.MEMORYSTATUSEX();
             mem.dwLength = (uint)Marshal.SizeOf(typeof(WinNative.MEMORYSTATUSEX));
             if (WinNative.GlobalMemoryStatusEx(ref mem) && mem.ullTotalPhys > 0)
@@ -351,7 +696,6 @@ namespace CorePulse
                 snap.RamLoadPct = mem.dwMemoryLoad;
             }
 
-            // 2. Native Network Throughput
             long rx, tx;
             SampleNetTotals(out rx, out tx);
             DateTime now = DateTime.UtcNow;
@@ -360,7 +704,6 @@ namespace CorePulse
             if (_lastNetTx > 0 && tx >= _lastNetTx) snap.NetUpMbps = (float)(((tx - _lastNetTx) * 8.0) / (secs * 1000000.0));
             _lastNetRx = rx; _lastNetTx = tx; _lastNetTime = now;
 
-            // 3. ETW Zero-Injection FPS
             if (_fps != null)
             {
                 snap.FpsEtwActive = _fps.IsActive;
@@ -370,19 +713,20 @@ namespace CorePulse
                 snap.Fps = f; snap.Fps1Low = f1; snap.FrametimeMs = ft; snap.ActiveGameProcess = gp;
             }
 
-            // 4. LibreHardwareMonitorLib Full Sensors + Fan Controls
-            if (LhmActive && _computer != null)
+            if (LhmActive && _lhmObj != null)
             {
-                try { PollLhmIntoSnapshot(snap); } catch { }
+                try { PollLhmIsolated(snap); } catch { }
             }
 
-            // Fallback CPU load if LHM wasn't active
             if (!LhmActive && _cpuFallback != null)
             {
                 try { snap.CpuLoadPct = Math.Max(0f, Math.Min(100f, _cpuFallback.NextValue())); } catch { }
             }
 
-            // Transparent system power estimate (when no smart USB PSU sensor exists)
+            // Preserve 64-bit registry VRAM total if LHM did not report SmallData Memory Total
+            if (snap.GpuVramTotalGb <= 0f && _staticGpuVramGb > 0f)
+                snap.GpuVramTotalGb = _staticGpuVramGb;
+
             if (snap.PsuRealPowerW > 1f)
             {
                 snap.EstimatedTotalPowerW = snap.PsuRealPowerW;
@@ -392,11 +736,10 @@ namespace CorePulse
             {
                 float cpuW = snap.CpuPowerW > 1f ? snap.CpuPowerW : (18f + (snap.CpuLoadPct / 100f) * 55f);
                 float gpuW = snap.GpuPowerW > 1f ? snap.GpuPowerW : (15f + (Math.Max(0f, snap.GpuLoadPct) / 100f) * 110f);
-                snap.EstimatedTotalPowerW = cpuW + gpuW + 32f; // Board + RAM + Fans + SSD baseline
+                snap.EstimatedTotalPowerW = cpuW + gpuW + 32f;
                 snap.PsuLabel = "Est. System Draw";
             }
 
-            // Copy live fan list
             lock (_lock)
             {
                 snap.Fans = new List<FanChannelInfo>(_fanMap.Values);
@@ -407,210 +750,14 @@ namespace CorePulse
                 }
             }
 
-            // Append sparkline history
             PushHistory(snap);
-
             Latest = snap;
             return snap;
         }
 
-        private void PollLhmIntoSnapshot(TelemetrySnapshot snap)
+        private void AddSensorReading(TelemetrySnapshot snap, string grp, string hwName, string name, string typeLabel, string unit, float val)
         {
-            foreach (IHardware hw in _computer.Hardware)
-            {
-                try { hw.Update(); } catch { continue; }
-                ProcessHardwareNode(hw, snap);
-                foreach (IHardware sub in hw.SubHardware)
-                {
-                    try { sub.Update(); } catch { continue; }
-                    ProcessHardwareNode(sub, snap);
-                }
-            }
-        }
-
-        private void ProcessHardwareNode(IHardware hw, TelemetrySnapshot snap)
-        {
-            HardwareType ht = hw.HardwareType;
-            string grp = MapGroup(ht);
-            bool isGpu = (ht == HardwareType.GpuAmd || ht == HardwareType.GpuNvidia || ht == HardwareType.GpuIntel);
-
-            if (ht == HardwareType.Cpu && !string.IsNullOrEmpty(hw.Name)) snap.CpuName = hw.Name;
-            else if (isGpu && !string.IsNullOrEmpty(hw.Name)) snap.GpuName = hw.Name;
-            else if (ht == HardwareType.Motherboard && !string.IsNullOrEmpty(hw.Name)) snap.MotherboardName = hw.Name;
-            else if (ht == HardwareType.Storage && string.IsNullOrEmpty(snap.StorageName)) snap.StorageName = hw.Name;
-
-            // Track Fan RPM & Control pairing within this hardware node
-            Dictionary<string, float> fanRpms = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
-            foreach (ISensor s in hw.Sensors)
-            {
-                if (!s.Value.HasValue || float.IsNaN(s.Value.Value) || float.IsInfinity(s.Value.Value)) continue;
-                float val = s.Value.Value;
-                string sName = s.Name ?? "";
-
-                // Record valid readings into AllSensors (skip invalid 0°C temps or D3D spam)
-                if (ShouldDisplayInSensorTable(s, val))
-                    AddSensorReading(snap, grp, hw.Name, sName, s.SensorType, val);
-
-                if (ht == HardwareType.Cpu)
-                {
-                    if (s.SensorType == SensorType.Temperature && val > 1f && val < 130f)
-                    {
-                        if (sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            sName.IndexOf("Tctl", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            sName.IndexOf("Tdie", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            snap.CpuTempC < 0f)
-                            snap.CpuTempC = val;
-                    }
-                    else if (s.SensorType == SensorType.Load && sName.Equals("CPU Total", StringComparison.OrdinalIgnoreCase))
-                        snap.CpuLoadPct = val;
-                    else if (s.SensorType == SensorType.Clock && val > 100f &&
-                             (sName.IndexOf("Average", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Core #1", StringComparison.OrdinalIgnoreCase) >= 0))
-                    {
-                        if (snap.CpuClockMhz < 0f || sName.IndexOf("Average", StringComparison.OrdinalIgnoreCase) >= 0)
-                            snap.CpuClockMhz = val;
-                    }
-                    else if (s.SensorType == SensorType.Power && val > 0.5f && sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0)
-                        snap.CpuPowerW = val;
-                }
-                else if (isGpu)
-                {
-                    if (s.SensorType == SensorType.Temperature && val > 1f && val < 130f)
-                    {
-                        if (sName.IndexOf("Hot Spot", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Hotspot", StringComparison.OrdinalIgnoreCase) >= 0)
-                            snap.GpuHotspotC = val;
-                        else if (sName.IndexOf("Core", StringComparison.OrdinalIgnoreCase) >= 0 || snap.GpuTempC < 0f)
-                            snap.GpuTempC = val;
-                    }
-                    else if (s.SensorType == SensorType.Load && (sName.Equals("GPU Core", StringComparison.OrdinalIgnoreCase) || sName.Equals("D3D 3D", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        if (sName.Equals("GPU Core", StringComparison.OrdinalIgnoreCase) || snap.GpuLoadPct < 0f)
-                            snap.GpuLoadPct = val;
-                    }
-                    else if (s.SensorType == SensorType.Clock && val > 10f)
-                    {
-                        if (sName.IndexOf("Core", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuClockMhz = val;
-                        else if (sName.IndexOf("Memory", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuMemClockMhz = val;
-                    }
-                    else if (s.SensorType == SensorType.Power && val > 0.5f)
-                    {
-                        if (snap.GpuPowerW < 0f || sName.IndexOf("Package", StringComparison.OrdinalIgnoreCase) >= 0 || sName.IndexOf("Total", StringComparison.OrdinalIgnoreCase) >= 0)
-                            snap.GpuPowerW = val;
-                    }
-                    else if (s.SensorType == SensorType.SmallData)
-                    {
-                        if (sName.IndexOf("Memory Used", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuVramUsedGb = val / 1024f;
-                        else if (sName.IndexOf("Memory Total", StringComparison.OrdinalIgnoreCase) >= 0) snap.GpuVramTotalGb = val / 1024f;
-                    }
-                    else if (s.SensorType == SensorType.Fan)
-                    {
-                        snap.GpuFanRpm = val;
-                        fanRpms[sName] = val;
-                    }
-                    else if (s.SensorType == SensorType.Control)
-                    {
-                        snap.GpuFanPct = val;
-                    }
-                }
-                else if (ht == HardwareType.Motherboard || ht == HardwareType.SuperIO)
-                {
-                    if (s.SensorType == SensorType.Temperature && val > 10f && val < 115f && snap.BoardTempC < 0f)
-                        snap.BoardTempC = val;
-                    else if (s.SensorType == SensorType.Fan)
-                        fanRpms[sName] = val;
-                }
-                else if (ht == HardwareType.Storage)
-                {
-                    if (s.SensorType == SensorType.Temperature && val > 5f && val < 105f && snap.StorageTempC < 0f)
-                        snap.StorageTempC = val;
-                    else if (s.SensorType == SensorType.Load && sName.IndexOf("Total Activity", StringComparison.OrdinalIgnoreCase) >= 0)
-                        snap.DiskLoadPct = Math.Max(snap.DiskLoadPct, val);
-                }
-                else if (ht == HardwareType.Psu)
-                {
-                    if (s.SensorType == SensorType.Power && val > 1f)
-                        snap.PsuRealPowerW = Math.Max(snap.PsuRealPowerW, val);
-                }
-            }
-
-            // Register controllable PWM fan channels + read-only RPM fans
-            lock (_lock)
-            {
-                foreach (ISensor s in hw.Sensors)
-                {
-                    if (s.SensorType == SensorType.Control)
-                    {
-                        string id = s.Identifier != null ? s.Identifier.ToString() : (hw.Name + "/" + s.Name);
-                        FanChannelInfo fc;
-                        if (!_fanMap.TryGetValue(id, out fc))
-                        {
-                            fc = new FanChannelInfo();
-                            fc.Id = id;
-                            fc.DisplayName = isGpu ? ("GPU Fan (" + s.Name + ")") : s.Name;
-                            fc.HardwareName = hw.Name;
-                            fc.IsGpuFan = isGpu;
-                            _fanMap[id] = fc;
-                        }
-                        fc.HasControl = (s.Control != null);
-                        fc.NativeControl = s.Control;
-                        fc.CurrentDutyPct = s.Value.HasValue ? s.Value.Value : fc.CurrentDutyPct;
-
-                        // Match RPM sensor with same name (e.g. "Fan #1" / "GPU Fan")
-                        float rpm;
-                        if (fanRpms.TryGetValue(s.Name, out rpm)) fc.CurrentRpm = rpm;
-                        else if (isGpu && snap.GpuFanRpm >= 0) fc.CurrentRpm = snap.GpuFanRpm;
-                    }
-                    else if (s.SensorType == SensorType.Fan && s.Value.HasValue && s.Value.Value > 0f)
-                    {
-                        // Ensure active RPM-only motherboard fans still show up even if no Control exists
-                        string matchKey = null;
-                        foreach (KeyValuePair<string, FanChannelInfo> kv in _fanMap)
-                        {
-                            if (kv.Value.HardwareName == hw.Name && kv.Value.DisplayName.IndexOf(s.Name, StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                kv.Value.CurrentRpm = s.Value.Value;
-                                matchKey = kv.Key;
-                                break;
-                            }
-                        }
-                        if (matchKey == null)
-                        {
-                            string id = "rpm:" + hw.Name + "/" + s.Name;
-                            FanChannelInfo fc;
-                            if (!_fanMap.TryGetValue(id, out fc))
-                            {
-                                fc = new FanChannelInfo();
-                                fc.Id = id;
-                                fc.DisplayName = isGpu ? "GPU Fan" : s.Name;
-                                fc.HardwareName = hw.Name;
-                                fc.IsGpuFan = isGpu;
-                                fc.HasControl = false;
-                                _fanMap[id] = fc;
-                            }
-                            fc.CurrentRpm = s.Value.Value;
-                        }
-                    }
-                }
-            }
-        }
-
-        private static bool ShouldDisplayInSensorTable(ISensor s, float val)
-        {
-            if (s.SensorType == SensorType.Temperature && (val <= 1f || val > 130f)) return false;
-            if (s.SensorType == SensorType.Clock && val <= 1f) return false;
-            if (s.SensorType == SensorType.Power && val <= 0.05f) return false;
-            if (s.SensorType == SensorType.Load && s.Name.StartsWith("D3D ", StringComparison.OrdinalIgnoreCase) && s.Name != "D3D 3D") return false;
-            return s.SensorType == SensorType.Temperature ||
-                   s.SensorType == SensorType.Load ||
-                   s.SensorType == SensorType.Clock ||
-                   s.SensorType == SensorType.Fan ||
-                   s.SensorType == SensorType.Control ||
-                   s.SensorType == SensorType.Power ||
-                   s.SensorType == SensorType.Voltage;
-        }
-
-        private void AddSensorReading(TelemetrySnapshot snap, string grp, string hwName, string name, SensorType st, float val)
-        {
-            string key = grp + "|" + hwName + "|" + st + "|" + name;
+            string key = grp + "|" + hwName + "|" + typeLabel + "|" + name;
             float mn = val, mx = val;
             lock (_lock)
             {
@@ -619,36 +766,11 @@ namespace CorePulse
                 _minMap[key] = mn;
                 _maxMap[key] = mx;
             }
-
-            SensorReading sr = new SensorReading();
-            sr.Group = grp;
-            sr.HardwareName = hwName;
-            sr.Name = name;
-            sr.Value = val;
-            sr.Min = mn;
-            sr.Max = mx;
-
-            if (st == SensorType.Temperature) { sr.TypeLabel = "Temp"; sr.Unit = "°C"; }
-            else if (st == SensorType.Load) { sr.TypeLabel = "Load"; sr.Unit = "%"; }
-            else if (st == SensorType.Clock) { sr.TypeLabel = "Clock"; sr.Unit = "MHz"; }
-            else if (st == SensorType.Fan) { sr.TypeLabel = "Fan"; sr.Unit = "RPM"; }
-            else if (st == SensorType.Control) { sr.TypeLabel = "PWM"; sr.Unit = "%"; }
-            else if (st == SensorType.Power) { sr.TypeLabel = "Power"; sr.Unit = "W"; }
-            else if (st == SensorType.Voltage) { sr.TypeLabel = "Volt"; sr.Unit = "V"; }
-            else { sr.TypeLabel = st.ToString(); sr.Unit = ""; }
-
-            snap.AllSensors.Add(sr);
-        }
-
-        private static string MapGroup(HardwareType ht)
-        {
-            if (ht == HardwareType.Cpu) return "CPU";
-            if (ht == HardwareType.GpuAmd || ht == HardwareType.GpuNvidia || ht == HardwareType.GpuIntel) return "GPU";
-            if (ht == HardwareType.Motherboard || ht == HardwareType.SuperIO || ht == HardwareType.EmbeddedController) return "Motherboard";
-            if (ht == HardwareType.Memory) return "Memory";
-            if (ht == HardwareType.Storage) return "Storage";
-            if (ht == HardwareType.Psu) return "Power";
-            return "Network";
+            snap.AllSensors.Add(new SensorReading
+            {
+                Group = grp, HardwareName = hwName, Name = name,
+                TypeLabel = typeLabel, Unit = unit, Value = val, Min = mn, Max = mx
+            });
         }
 
         private static void SampleNetTotals(out long rx, out long tx)
@@ -689,51 +811,25 @@ namespace CorePulse
         private void BuildDemoSnapshot()
         {
             TelemetrySnapshot d = new TelemetrySnapshot();
-            d.IsAdmin = true;
-            d.PawnIoInstalled = true;
-            d.LhmLoaded = true;
-            d.CpuName = "AMD Ryzen 7 7800X3D";
-            d.CpuCores = 8;
+            d.IsAdmin = true; d.PawnIoInstalled = true; d.LhmLoaded = true;
+            d.CpuName = "AMD Ryzen 7 7800X3D"; d.CpuCores = 8;
             d.GpuName = "NVIDIA GeForce RTX 4070 Super";
             d.MotherboardName = "ASUS ROG STRIX B650E-F";
             d.RamSpecText = "32 GB (2x16 GB DDR5 · 6000 MHz)";
             d.StorageName = "Samsung 990 PRO 2TB NVMe";
             d.PsuLabel = "Est. System Draw";
 
-            d.CpuTempC = 58.4f;
-            d.CpuLoadPct = 36.2f;
-            d.CpuClockMhz = 4850f;
-            d.CpuPowerW = 54.6f;
+            d.CpuTempC = 58.4f; d.CpuLoadPct = 36.2f; d.CpuClockMhz = 4850f; d.CpuPowerW = 54.6f;
+            d.GpuTempC = 63.0f; d.GpuHotspotC = 74.2f; d.GpuLoadPct = 88.5f;
+            d.GpuVramUsedGb = 7.4f; d.GpuVramTotalGb = 12.0f;
+            d.GpuClockMhz = 2640f; d.GpuMemClockMhz = 10501f;
+            d.GpuFanPct = 56f; d.GpuFanRpm = 1680f; d.GpuPowerW = 194.2f;
+            d.RamUsedGb = 14.8f; d.RamTotalGb = 32.0f; d.RamLoadPct = 46.3f;
+            d.BoardTempC = 39.0f; d.StorageTempC = 42.0f; d.DiskLoadPct = 6.5f;
+            d.EstimatedTotalPowerW = 282.8f; d.NetDownMbps = 42.6f; d.NetUpMbps = 8.4f;
+            d.Fps = 184f; d.Fps1Low = 142f; d.FrametimeMs = 5.4f;
+            d.ActiveGameProcess = "cs2.exe"; d.FpsEtwActive = true; d.PrimaryCaseFanRpm = 1180f;
 
-            d.GpuTempC = 63.0f;
-            d.GpuHotspotC = 74.2f;
-            d.GpuLoadPct = 88.5f;
-            d.GpuVramUsedGb = 7.4f;
-            d.GpuVramTotalGb = 12.0f;
-            d.GpuClockMhz = 2640f;
-            d.GpuMemClockMhz = 10501f;
-            d.GpuFanPct = 56f;
-            d.GpuFanRpm = 1680f;
-            d.GpuPowerW = 194.2f;
-
-            d.RamUsedGb = 14.8f;
-            d.RamTotalGb = 32.0f;
-            d.RamLoadPct = 46.3f;
-            d.BoardTempC = 39.0f;
-            d.StorageTempC = 42.0f;
-            d.DiskLoadPct = 6.5f;
-            d.EstimatedTotalPowerW = 282.8f;
-            d.NetDownMbps = 42.6f;
-            d.NetUpMbps = 8.4f;
-
-            d.Fps = 184f;
-            d.Fps1Low = 142f;
-            d.FrametimeMs = 5.4f;
-            d.ActiveGameProcess = "cs2.exe";
-            d.FpsEtwActive = true;
-            d.PrimaryCaseFanRpm = 1180f;
-
-            // Realistic demo sensor table rows
             AddDemoRow(d, "CPU", d.CpuName, "Core (Tctl/Tdie)", "Temp", "°C", 58.4f, 41.2f, 67.8f);
             AddDemoRow(d, "CPU", d.CpuName, "CPU Total", "Load", "%", 36.2f, 8.4f, 64.0f);
             AddDemoRow(d, "CPU", d.CpuName, "Core Clocks (Avg)", "Clock", "MHz", 4850f, 3200f, 5050f);
@@ -750,13 +846,11 @@ namespace CorePulse
             AddDemoRow(d, "Motherboard", d.MotherboardName, "Chassis Fan #2 (Rear)", "Fan", "RPM", 1090f, 700f, 1290f);
             AddDemoRow(d, "Storage", d.StorageName, "NVMe Drive Temp", "Temp", "°C", 42.0f, 35.0f, 47.0f);
 
-            // Realistic demo controllable fan channels
             d.Fans.Add(new FanChannelInfo { Id = "demo_cpu", DisplayName = "CPU Cooler (PWM #1)", HardwareName = d.MotherboardName, IsGpuFan = false, HasControl = true, CurrentRpm = 1340, CurrentDutyPct = 58, ManualDutyPct = 60, Mode = 2 });
             d.Fans.Add(new FanChannelInfo { Id = "demo_gpu", DisplayName = "GPU Fan (RTX 4070 Super)", HardwareName = d.GpuName, IsGpuFan = true, HasControl = true, CurrentRpm = 1680, CurrentDutyPct = 56, ManualDutyPct = 55, Mode = 2 });
             d.Fans.Add(new FanChannelInfo { Id = "demo_sys1", DisplayName = "Front Intake (SYS_FAN1)", HardwareName = d.MotherboardName, IsGpuFan = false, HasControl = true, CurrentRpm = 1180, CurrentDutyPct = 52, ManualDutyPct = 50, Mode = 2 });
             d.Fans.Add(new FanChannelInfo { Id = "demo_sys2", DisplayName = "Rear Exhaust (SYS_FAN2)", HardwareName = d.MotherboardName, IsGpuFan = false, HasControl = true, CurrentRpm = 1090, CurrentDutyPct = 48, ManualDutyPct = 48, Mode = 0 });
 
-            // Populate smooth sparkline curves
             for (int i = 0; i < 60; i++)
             {
                 double t = i / 6.5;
@@ -779,8 +873,8 @@ namespace CorePulse
         {
             try { if (_fps != null) _fps.Dispose(); } catch { }
             try { if (_cpuFallback != null) _cpuFallback.Dispose(); } catch { }
-            try { if (_computer != null) _computer.Close(); } catch { }
-            _computer = null;
+            try { if (_lhmObj != null) _lhmObj.Dispose(); } catch { }
+            _lhmObj = null;
             LhmActive = false;
         }
     }

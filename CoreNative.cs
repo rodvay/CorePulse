@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
@@ -35,6 +36,11 @@ namespace CorePulse
         {
             return lang == "zh" ? "Microsoft YaHei UI" : "Segoe UI";
         }
+
+        public static string F(string format, params object[] args)
+        {
+            return string.Format(CultureInfo.InvariantCulture, format, args);
+        }
     }
 
     internal enum OverlayAnchor
@@ -60,9 +66,14 @@ namespace CorePulse
     {
         public string Language = Loc.DetectDefaultLanguage();
 
+        // System behavior
+        public bool MinimizeToTray = true;
+        public bool StartWithWindows = false;
+
         // Always-On-Top Overlay HUD configuration
         public bool OverlayEnabled = false;
         public OverlayAnchor OverlayPosition = OverlayAnchor.TopLeft;
+        public int OverlayMonitorIndex = 0; // 0 = Primary Screen, 1..N = Screen.AllScreens[idx - 1]
         public bool OverlayHorizontal = true;
         public int OverlayOpacity = 88; // 55..100
         public int OverlayScale = 1;    // 0=Compact, 1=Normal, 2=Large
@@ -84,11 +95,13 @@ namespace CorePulse
         public bool HudShowBoardDiskTemp = false;
         public bool HudShowNetClock = false;
 
-        // Fan Control Profile & Thermal Safety Override
+        // Fan Control Profile & Curve
         public FanProfileMode FanProfile = FanProfileMode.BiosAuto;
-        public bool CurveFollowsGpu = false; // false = Max(CPU, GPU) / CPU, true = GPU
+        public bool CurveFollowsGpu = false;
         public int[] CurveTemps = new int[] { 35, 50, 65, 75, 85 };
         public int[] CurveDuties = new int[] { 35, 50, 70, 88, 100 };
+        public Dictionary<string, int> SavedFanModes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> SavedFanManuals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         public static string GetSettingsPath()
         {
@@ -99,6 +112,7 @@ namespace CorePulse
         public static CorePulseSettings Load()
         {
             CorePulseSettings s = new CorePulseSettings();
+            s.StartWithWindows = WinNative.IsStartupEnabled();
             try
             {
                 string path = GetSettingsPath();
@@ -111,8 +125,10 @@ namespace CorePulse
                     string v = raw.Substring(eq + 1).Trim();
                     int iv;
                     if (k == "Language" && (v == "tr" || v == "en" || v == "zh")) s.Language = v;
+                    else if (k == "MinimizeToTray") s.MinimizeToTray = (v == "1");
                     else if (k == "OverlayEnabled") s.OverlayEnabled = (v == "1");
                     else if (k == "OverlayPosition" && int.TryParse(v, out iv) && iv >= 0 && iv <= 5) s.OverlayPosition = (OverlayAnchor)iv;
+                    else if (k == "OverlayMonitorIndex" && int.TryParse(v, out iv) && iv >= 0 && iv <= 16) s.OverlayMonitorIndex = iv;
                     else if (k == "OverlayHorizontal") s.OverlayHorizontal = (v == "1");
                     else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(55, Math.Min(100, iv));
                     else if (k == "OverlayScale" && int.TryParse(v, out iv) && iv >= 0 && iv <= 2) s.OverlayScale = iv;
@@ -133,17 +149,27 @@ namespace CorePulse
                     else if (k == "HudShowNetClock") s.HudShowNetClock = (v == "1");
                     else if (k == "FanProfile" && int.TryParse(v, out iv) && iv >= 0 && iv <= 4) s.FanProfile = (FanProfileMode)iv;
                     else if (k == "CurveFollowsGpu") s.CurveFollowsGpu = (v == "1");
+                    else if (k == "CurveTemps")
+                    {
+                        string[] parts = v.Split(',');
+                        if (parts.Length == 5)
+                            for (int i = 0; i < 5; i++) { int d; if (int.TryParse(parts[i], out d)) s.CurveTemps[i] = Math.Max(20, Math.Min(95, d)); }
+                    }
                     else if (k == "CurveDuties")
                     {
                         string[] parts = v.Split(',');
                         if (parts.Length == 5)
-                        {
-                            for (int i = 0; i < 5; i++)
-                            {
-                                int d;
-                                if (int.TryParse(parts[i], out d)) s.CurveDuties[i] = Math.Max(25, Math.Min(100, d));
-                            }
-                        }
+                            for (int i = 0; i < 5; i++) { int d; if (int.TryParse(parts[i], out d)) s.CurveDuties[i] = Math.Max(25, Math.Min(100, d)); }
+                    }
+                    else if (k.StartsWith("FanMode|"))
+                    {
+                        string fid = k.Substring(8);
+                        if (int.TryParse(v, out iv) && iv >= 0 && iv <= 2) s.SavedFanModes[fid] = iv;
+                    }
+                    else if (k.StartsWith("FanManual|"))
+                    {
+                        string fid = k.Substring(10);
+                        if (int.TryParse(v, out iv)) s.SavedFanManuals[fid] = Math.Max(25, Math.Min(100, iv));
                     }
                 }
             }
@@ -160,8 +186,10 @@ namespace CorePulse
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("Language=" + (Language ?? "en"));
+                sb.AppendLine("MinimizeToTray=" + (MinimizeToTray ? "1" : "0"));
                 sb.AppendLine("OverlayEnabled=" + (OverlayEnabled ? "1" : "0"));
                 sb.AppendLine("OverlayPosition=" + ((int)OverlayPosition));
+                sb.AppendLine("OverlayMonitorIndex=" + OverlayMonitorIndex);
                 sb.AppendLine("OverlayHorizontal=" + (OverlayHorizontal ? "1" : "0"));
                 sb.AppendLine("OverlayOpacity=" + OverlayOpacity);
                 sb.AppendLine("OverlayScale=" + OverlayScale);
@@ -182,7 +210,10 @@ namespace CorePulse
                 sb.AppendLine("HudShowNetClock=" + (HudShowNetClock ? "1" : "0"));
                 sb.AppendLine("FanProfile=" + ((int)FanProfile));
                 sb.AppendLine("CurveFollowsGpu=" + (CurveFollowsGpu ? "1" : "0"));
-                sb.AppendLine("CurveDuties=" + string.Format("{0},{1},{2},{3},{4}", CurveDuties[0], CurveDuties[1], CurveDuties[2], CurveDuties[3], CurveDuties[4]));
+                sb.AppendLine("CurveTemps=" + Loc.F("{0},{1},{2},{3},{4}", CurveTemps[0], CurveTemps[1], CurveTemps[2], CurveTemps[3], CurveTemps[4]));
+                sb.AppendLine("CurveDuties=" + Loc.F("{0},{1},{2},{3},{4}", CurveDuties[0], CurveDuties[1], CurveDuties[2], CurveDuties[3], CurveDuties[4]));
+                foreach (KeyValuePair<string, int> kv in SavedFanModes) sb.AppendLine("FanMode|" + kv.Key + "=" + kv.Value);
+                foreach (KeyValuePair<string, int> kv in SavedFanManuals) sb.AppendLine("FanManual|" + kv.Key + "=" + kv.Value);
                 File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
             }
             catch { }
@@ -233,12 +264,15 @@ namespace CorePulse
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_NOMOVE = 0x0002;
         public const uint SWP_NOACTIVATE = 0x0010;
-        public const uint SWP_SHOWWINDOW = 0x0040;
+        public const int ULW_ALPHA = 0x00000002;
+        public const byte AC_SRC_OVER = 0x00;
+        public const byte AC_SRC_ALPHA = 0x01;
 
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
         private const int DWMWA_CAPTION_COLOR = 35;
         private const int DWMWA_TEXT_COLOR = 36;
+        private const string StartupRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
 
         [StructLayout(LayoutKind.Sequential)]
@@ -253,6 +287,21 @@ namespace CorePulse
             public ulong ullTotalVirtual;
             public ulong ullAvailVirtual;
             public ulong ullAvailExtendedVirtual;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X; public int Y; public POINT(int x, int y) { X = x; Y = y; } }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SIZE { public int cx; public int cy; public SIZE(int w, int h) { cx = w; cy = h; } }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -288,6 +337,30 @@ namespace CorePulse
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeleteObject(IntPtr hObject);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pprSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
@@ -317,10 +390,7 @@ namespace CorePulse
             try
             {
                 using (WindowsIdentity id = WindowsIdentity.GetCurrent())
-                {
-                    WindowsPrincipal p = new WindowsPrincipal(id);
-                    return p.IsInRole(WindowsBuiltInRole.Administrator);
-                }
+                    return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
             }
             catch { return false; }
         }
@@ -331,6 +401,38 @@ namespace CorePulse
             {
                 using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO", false))
                     return k != null;
+            }
+            catch { return false; }
+        }
+
+        public static bool IsStartupEnabled()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(StartupRunKey, false))
+                    return k != null && k.GetValue("CorePulse") != null;
+            }
+            catch { return false; }
+        }
+
+        public static bool SetStartupEnabled(bool enable)
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.CreateSubKey(StartupRunKey))
+                {
+                    if (k == null) return false;
+                    if (enable)
+                    {
+                        string exe = Process.GetCurrentProcess().MainModule.FileName;
+                        k.SetValue("CorePulse", "\"" + exe + "\" --minimized", RegistryValueKind.String);
+                    }
+                    else
+                    {
+                        k.DeleteValue("CorePulse", false);
+                    }
+                    return true;
+                }
             }
             catch { return false; }
         }
