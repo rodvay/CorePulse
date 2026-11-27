@@ -20,6 +20,11 @@ namespace CorePulse
         public float Value;
         public float Min;
         public float Max;
+
+        public string Key
+        {
+            get { return (Group ?? "") + "|" + (HardwareName ?? "") + "|" + (TypeLabel ?? "") + "|" + (Name ?? ""); }
+        }
     }
 
     internal sealed class FanChannelInfo
@@ -245,11 +250,18 @@ namespace CorePulse
                 string sName = s.Name ?? "";
                 LibreHardwareMonitor.Hardware.SensorType st = s.SensorType;
 
-                if (ShouldShow(st, sName, val))
+                if (ShouldShow(st, sName, val, isGpu))
                 {
                     string tl, unit;
+                    float dispVal = val;
                     MapType(st, out tl, out unit);
-                    addSensor(snap, grp, hw.Name, sName, tl, unit, val);
+                    if (st == LibreHardwareMonitor.Hardware.SensorType.SmallData)
+                    {
+                        tl = "VRAM";
+                        unit = "GB";
+                        dispVal = val / 1024f;
+                    }
+                    addSensor(snap, grp, hw.Name, sName, tl, unit, dispVal);
                 }
 
                 if (ht == LibreHardwareMonitor.Hardware.HardwareType.Cpu)
@@ -399,12 +411,19 @@ namespace CorePulse
             }
         }
 
-        private static bool ShouldShow(LibreHardwareMonitor.Hardware.SensorType st, string name, float val)
+        private static bool ShouldShow(LibreHardwareMonitor.Hardware.SensorType st, string name, float val, bool isGpu)
         {
             if (st == LibreHardwareMonitor.Hardware.SensorType.Temperature && (val <= 1f || val > 130f)) return false;
             if (st == LibreHardwareMonitor.Hardware.SensorType.Clock && val <= 1f) return false;
             if (st == LibreHardwareMonitor.Hardware.SensorType.Power && val <= 0.05f) return false;
             if (st == LibreHardwareMonitor.Hardware.SensorType.Load && name.StartsWith("D3D ", StringComparison.OrdinalIgnoreCase) && name != "D3D 3D") return false;
+            if (st == LibreHardwareMonitor.Hardware.SensorType.SmallData)
+            {
+                return isGpu &&
+                       name.IndexOf("Memory Used", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                       name.IndexOf("Shared", StringComparison.OrdinalIgnoreCase) < 0 &&
+                       val >= 0f;
+            }
             return st == LibreHardwareMonitor.Hardware.SensorType.Temperature ||
                    st == LibreHardwareMonitor.Hardware.SensorType.Load ||
                    st == LibreHardwareMonitor.Hardware.SensorType.Clock ||
@@ -849,13 +868,16 @@ namespace CorePulse
             d.ActiveGameProcess = "cs2.exe"; d.FpsEtwActive = true; d.PrimaryCaseFanRpm = 1180f;
 
             AddDemoRow(d, "CPU", d.CpuName, "Core (Tctl/Tdie)", "Temp", "°C", 58.4f, 41.2f, 67.8f);
+            AddDemoRow(d, "CPU", d.CpuName, "CCD1 (Tdie)", "Temp", "°C", 56.1f, 39.5f, 65.2f);
             AddDemoRow(d, "CPU", d.CpuName, "CPU Total", "Load", "%", 36.2f, 8.4f, 64.0f);
             AddDemoRow(d, "CPU", d.CpuName, "Core Clocks (Avg)", "Clock", "MHz", 4850f, 3200f, 5050f);
             AddDemoRow(d, "CPU", d.CpuName, "CPU Package", "Power", "W", 54.6f, 24.1f, 78.5f);
             AddDemoRow(d, "GPU", d.GpuName, "GPU Core", "Temp", "°C", 63.0f, 36.0f, 68.5f);
             AddDemoRow(d, "GPU", d.GpuName, "GPU Hot Spot", "Temp", "°C", 74.2f, 44.0f, 79.8f);
             AddDemoRow(d, "GPU", d.GpuName, "GPU Core", "Load", "%", 88.5f, 4.0f, 99.0f);
+            AddDemoRow(d, "GPU", d.GpuName, "GPU Memory Used", "VRAM", "GB", 7.4f, 1.2f, 9.8f);
             AddDemoRow(d, "GPU", d.GpuName, "GPU Fan", "Fan", "RPM", 1680f, 0f, 1920f);
+            AddDemoRow(d, "GPU", d.GpuName, "GPU Fan", "PWM", "%", 56.0f, 30.0f, 68.0f);
             AddDemoRow(d, "GPU", d.GpuName, "GPU Board Power", "Power", "W", 194.2f, 16.0f, 218.4f);
             AddDemoRow(d, "Motherboard", d.MotherboardName, "VRM MOS", "Temp", "°C", 46.0f, 34.0f, 51.0f);
             AddDemoRow(d, "Motherboard", d.MotherboardName, "Chipset", "Temp", "°C", 39.0f, 35.0f, 42.0f);

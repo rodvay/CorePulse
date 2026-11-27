@@ -295,49 +295,158 @@ namespace CorePulse
 
             if (c.HudShowFps)
             {
-                string val = s.Fps > 0.5f
-                    ? Loc.F("{0:0} ({1:0.0}ms)", s.Fps, s.FrametimeMs)
-                    : (s.FpsEtwActive ? "--" : "ADMIN");
-                Color vc = s.Fps >= 60f ? ColEmerald : (s.Fps >= 30f ? ColAmber : ColLabel);
-                list.Add(new HudEntry { Label = "FPS", Value = val, Accent = ColEmerald, ValueColor = vc });
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowFps"))
+                {
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowFps"), out vc);
+                    list.Add(new HudEntry { Label = "FPS", Value = txt, Accent = ColEmerald, ValueColor = vc });
+                }
+                else
+                {
+                    string val = s.Fps > 0.5f
+                        ? Loc.F("{0:0} ({1:0.0}ms)", s.Fps, s.FrametimeMs)
+                        : (s.FpsEtwActive ? "--" : "ADMIN");
+                    Color vc = s.Fps >= 60f ? ColEmerald : (s.Fps >= 30f ? ColAmber : ColLabel);
+                    list.Add(new HudEntry { Label = "FPS", Value = val, Accent = ColEmerald, ValueColor = vc });
+                }
             }
 
-            if (c.HudShowFps1Low && s.Fps > 0.5f)
+            if (c.HudShowFps1Low && (HudSensorResolver.HasCustomSensor(c, "HudShowFps1Low") || s.Fps > 0.5f))
             {
-                list.Add(new HudEntry { Label = "1% LOW", Value = Loc.F("{0:0}", s.Fps1Low), Accent = ColEmerald, ValueColor = s.Fps1Low >= 45f ? ColText : ColAmber });
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowFps1Low"))
+                {
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowFps1Low"), out vc);
+                    list.Add(new HudEntry { Label = "1% LOW", Value = txt, Accent = ColEmerald, ValueColor = vc });
+                }
+                else
+                {
+                    list.Add(new HudEntry { Label = "1% LOW", Value = Loc.F("{0:0}", s.Fps1Low), Accent = ColEmerald, ValueColor = s.Fps1Low >= 45f ? ColText : ColAmber });
+                }
             }
 
             if (c.HudShowCpuTemp || c.HudShowCpuLoad || c.HudShowCpuClockPower)
             {
                 List<string> parts = new List<string>();
-                if (c.HudShowCpuTemp) parts.Add(s.CpuTempC > 0f ? Loc.F("{0:0}°C", s.CpuTempC) : "--°C");
-                if (c.HudShowCpuLoad) parts.Add(Loc.F("{0:0}%", s.CpuLoadPct));
+                Color cpuValCol = ColText;
+                if (c.HudShowCpuTemp)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowCpuTemp"))
+                    {
+                        Color customCol;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowCpuTemp"), out customCol));
+                        cpuValCol = customCol;
+                    }
+                    else
+                    {
+                        parts.Add(s.CpuTempC > 0f ? Loc.F("{0:0}°C", s.CpuTempC) : "--°C");
+                        if (s.CpuTempC > 0f) cpuValCol = TempColor(s.CpuTempC);
+                    }
+                }
+                if (c.HudShowCpuLoad)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowCpuLoad"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowCpuLoad"), out unused));
+                    }
+                    else
+                    {
+                        parts.Add(Loc.F("{0:0}%", s.CpuLoadPct));
+                    }
+                }
                 if (c.HudShowCpuClockPower)
                 {
-                    if (s.CpuClockMhz > 100f) parts.Add(Loc.F("{0:0.0}GHz", s.CpuClockMhz / 1000f));
-                    if (s.CpuPowerW > 1f) parts.Add(Loc.F("{0:0}W", s.CpuPowerW));
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowCpuClockPower"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowCpuClockPower"), out unused));
+                    }
+                    else
+                    {
+                        if (s.CpuClockMhz > 100f) parts.Add(Loc.F("{0:0.0}GHz", s.CpuClockMhz / 1000f));
+                        if (s.CpuPowerW > 1f) parts.Add(Loc.F("{0:0}W", s.CpuPowerW));
+                    }
                 }
                 list.Add(new HudEntry
                 {
                     Label = "CPU",
                     Value = string.Join(" · ", parts.ToArray()),
                     Accent = ColCyan,
-                    ValueColor = c.HudShowCpuTemp && s.CpuTempC > 0f ? TempColor(s.CpuTempC) : ColText
+                    ValueColor = cpuValCol
                 });
             }
 
             if (c.HudShowGpuTemp || c.HudShowGpuLoad || c.HudShowGpuVram || c.HudShowGpuFan || c.HudShowGpuPower)
             {
                 List<string> parts = new List<string>();
-                if (c.HudShowGpuTemp) parts.Add(s.GpuTempC > 0f ? Loc.F("{0:0}°C", s.GpuTempC) : "--°C");
-                if (c.HudShowGpuLoad && s.GpuLoadPct >= 0f) parts.Add(Loc.F("{0:0}%", s.GpuLoadPct));
-                if (c.HudShowGpuVram && s.GpuVramUsedGb >= 0f) parts.Add(Loc.F("{0:0.0}GB", s.GpuVramUsedGb));
+                Color gpuValCol = ColText;
+                if (c.HudShowGpuTemp)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowGpuTemp"))
+                    {
+                        Color customCol;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowGpuTemp"), out customCol));
+                        gpuValCol = customCol;
+                    }
+                    else
+                    {
+                        parts.Add(s.GpuTempC > 0f ? Loc.F("{0:0}°C", s.GpuTempC) : "--°C");
+                        if (s.GpuTempC > 0f) gpuValCol = TempColor(s.GpuTempC);
+                    }
+                }
+                if (c.HudShowGpuLoad)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowGpuLoad"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowGpuLoad"), out unused));
+                    }
+                    else if (s.GpuLoadPct >= 0f)
+                    {
+                        parts.Add(Loc.F("{0:0}%", s.GpuLoadPct));
+                    }
+                }
+                if (c.HudShowGpuVram)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowGpuVram"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowGpuVram"), out unused));
+                    }
+                    else if (s.GpuVramUsedGb >= 0f)
+                    {
+                        parts.Add(Loc.F("{0:0.0}GB", s.GpuVramUsedGb));
+                    }
+                }
                 if (c.HudShowGpuFan)
                 {
-                    if (s.GpuFanRpm > 0f) parts.Add(Loc.F("{0:0} RPM", s.GpuFanRpm));
-                    else if (s.GpuFanPct >= 0f) parts.Add(Loc.F("FAN {0:0}%", s.GpuFanPct));
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowGpuFan"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowGpuFan"), out unused));
+                    }
+                    else if (s.GpuFanRpm > 0f)
+                    {
+                        parts.Add(Loc.F("{0:0} RPM", s.GpuFanRpm));
+                    }
+                    else if (s.GpuFanPct >= 0f)
+                    {
+                        parts.Add(Loc.F("FAN {0:0}%", s.GpuFanPct));
+                    }
                 }
-                if (c.HudShowGpuPower && s.GpuPowerW > 1f) parts.Add(Loc.F("{0:0}W", s.GpuPowerW));
+                if (c.HudShowGpuPower)
+                {
+                    if (HudSensorResolver.HasCustomSensor(c, "HudShowGpuPower"))
+                    {
+                        Color unused;
+                        parts.Add(HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowGpuPower"), out unused));
+                    }
+                    else if (s.GpuPowerW > 1f)
+                    {
+                        parts.Add(Loc.F("{0:0}W", s.GpuPowerW));
+                    }
+                }
 
                 if (parts.Count > 0)
                 {
@@ -346,48 +455,84 @@ namespace CorePulse
                         Label = "GPU",
                         Value = string.Join(" · ", parts.ToArray()),
                         Accent = ColEmerald,
-                        ValueColor = c.HudShowGpuTemp && s.GpuTempC > 0f ? TempColor(s.GpuTempC) : ColText
+                        ValueColor = gpuValCol
                     });
                 }
             }
 
-            if (c.HudShowRam && s.RamTotalGb > 0f)
+            if (c.HudShowRam && (HudSensorResolver.HasCustomSensor(c, "HudShowRam") || s.RamTotalGb > 0f))
             {
-                list.Add(new HudEntry
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowRam"))
                 {
-                    Label = "RAM",
-                    Value = Loc.F("{0:0.0}/{1:0}GB ({2:0}%)", s.RamUsedGb, s.RamTotalGb, s.RamLoadPct),
-                    Accent = ColViolet,
-                    ValueColor = s.RamLoadPct >= 88f ? ColAmber : ColText
-                });
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowRam"), out vc);
+                    list.Add(new HudEntry { Label = "RAM", Value = txt, Accent = ColViolet, ValueColor = vc });
+                }
+                else
+                {
+                    list.Add(new HudEntry
+                    {
+                        Label = "RAM",
+                        Value = Loc.F("{0:0.0}/{1:0}GB ({2:0}%)", s.RamUsedGb, s.RamTotalGb, s.RamLoadPct),
+                        Accent = ColViolet,
+                        ValueColor = s.RamLoadPct >= 88f ? ColAmber : ColText
+                    });
+                }
             }
 
             if (c.HudShowCaseFans)
             {
-                string fVal = s.PrimaryCaseFanRpm > 0f
-                    ? Loc.F("{0:0} RPM", s.PrimaryCaseFanRpm)
-                    : (s.GpuFanRpm > 0f ? Loc.F("{0:0} RPM", s.GpuFanRpm) : "-- RPM");
-                list.Add(new HudEntry { Label = "FAN", Value = fVal, Accent = ColCyan, ValueColor = ColText });
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowCaseFans"))
+                {
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowCaseFans"), out vc);
+                    list.Add(new HudEntry { Label = "FAN", Value = txt, Accent = ColCyan, ValueColor = vc });
+                }
+                else
+                {
+                    string fVal = s.PrimaryCaseFanRpm > 0f
+                        ? Loc.F("{0:0} RPM", s.PrimaryCaseFanRpm)
+                        : (s.GpuFanRpm > 0f ? Loc.F("{0:0} RPM", s.GpuFanRpm) : "-- RPM");
+                    list.Add(new HudEntry { Label = "FAN", Value = fVal, Accent = ColCyan, ValueColor = ColText });
+                }
             }
 
             if (c.HudShowBoardDiskTemp)
             {
-                List<string> pts = new List<string>();
-                if (s.BoardTempC > 0f) pts.Add(Loc.F("MB {0:0}°C", s.BoardTempC));
-                if (s.StorageTempC > 0f) pts.Add(Loc.F("SSD {0:0}°C", s.StorageTempC));
-                if (pts.Count == 0) pts.Add("--°C");
-                list.Add(new HudEntry { Label = "SYS", Value = string.Join(" · ", pts.ToArray()), Accent = ColAmber, ValueColor = ColText });
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowBoardDiskTemp"))
+                {
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowBoardDiskTemp"), out vc);
+                    list.Add(new HudEntry { Label = "SYS", Value = txt, Accent = ColAmber, ValueColor = vc });
+                }
+                else
+                {
+                    List<string> pts = new List<string>();
+                    if (s.BoardTempC > 0f) pts.Add(Loc.F("MB {0:0}°C", s.BoardTempC));
+                    if (s.StorageTempC > 0f) pts.Add(Loc.F("SSD {0:0}°C", s.StorageTempC));
+                    if (pts.Count == 0) pts.Add("--°C");
+                    list.Add(new HudEntry { Label = "SYS", Value = string.Join(" · ", pts.ToArray()), Accent = ColAmber, ValueColor = ColText });
+                }
             }
 
             if (c.HudShowNetClock)
             {
-                list.Add(new HudEntry
+                if (HudSensorResolver.HasCustomSensor(c, "HudShowNetClock"))
                 {
-                    Label = "NET",
-                    Value = Loc.F("↓{0:0.0} ↑{1:0.0} · {2}", s.NetDownMbps, s.NetUpMbps, DateTime.Now.ToString("HH:mm")),
-                    Accent = ColCyan,
-                    ValueColor = ColText
-                });
+                    Color vc;
+                    string txt = HudSensorResolver.FormatSelectedForHud(HudSensorResolver.ResolveSelectedOptions(c, s, "HudShowNetClock"), out vc);
+                    list.Add(new HudEntry { Label = "NET", Value = txt, Accent = ColCyan, ValueColor = vc });
+                }
+                else
+                {
+                    list.Add(new HudEntry
+                    {
+                        Label = "NET",
+                        Value = Loc.F("↓{0:0.0} ↑{1:0.0} · {2}", s.NetDownMbps, s.NetUpMbps, DateTime.Now.ToString("HH:mm")),
+                        Accent = ColCyan,
+                        ValueColor = ColText
+                    });
+                }
             }
 
             if (list.Count == 0)
@@ -452,19 +597,26 @@ namespace CorePulse
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     g.Clear(Color.Transparent);
 
-                    int bgAlpha = Math.Max(130, Math.Min(245, (int)Math.Round((c.OverlayOpacity / 100.0) * 238.0)));
-                    int bdAlpha = Math.Max(160, Math.Min(255, bgAlpha + 20));
+                    int clampedOp = Math.Max(0, Math.Min(100, c.OverlayOpacity));
+                    int bgAlpha = (int)Math.Round((clampedOp / 100.0) * 245.0);
+                    int bdAlpha = bgAlpha == 0 ? 175 : Math.Min(255, bgAlpha + 30);
                     RectangleF rc = new RectangleF(0.5f, 0.5f, w - 1.5f, h - 1.5f);
                     float rad = (c.OverlayHorizontal ? 9f : 10f) * sf;
 
-                    Color borderCol = dragUnlocked ? Color.FromArgb(255, ColCyan) : Color.FromArgb(bdAlpha, ColHudBorder);
-                    float borderW = dragUnlocked ? 2.0f : 1.2f;
                     using (GraphicsPath gp = Rounded(rc, rad))
-                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
-                    using (Pen bd = new Pen(borderCol, borderW))
                     {
-                        g.FillPath(bg, gp);
-                        g.DrawPath(bd, gp);
+                        if (bgAlpha > 0)
+                        {
+                            using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
+                                g.FillPath(bg, gp);
+                        }
+                        if (dragUnlocked || c.OverlayBorder)
+                        {
+                            Color borderCol = dragUnlocked ? Color.FromArgb(255, ColCyan) : Color.FromArgb(bdAlpha, ColHudBorder);
+                            float borderW = dragUnlocked ? 2.0f : 1.2f;
+                            using (Pen bd = new Pen(borderCol, borderW))
+                                g.DrawPath(bd, gp);
+                        }
                     }
 
                     if (c.OverlayHorizontal)

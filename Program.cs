@@ -104,6 +104,8 @@ namespace CorePulse
         private bool _dragScroll;
         private int _dragStartY;
         private int _dragStartScroll;
+        private bool _dragOpacity;
+        private RectangleF _opacityTrackRect;
 
         private readonly List<HitZone> _zones = new List<HitZone>();
 
@@ -115,6 +117,7 @@ namespace CorePulse
         public bool HudDragUnlocked;
 
         public event Action<string, object> ActionInvoked;
+        public event Action<int, bool> OpacityChanged;
 
         private Font _fSec;
         private Font _fTitle;
@@ -204,9 +207,24 @@ namespace CorePulse
             Invalidate();
         }
 
+        private int CalcOpacityFromX(int mouseX)
+        {
+            if (_opacityTrackRect.Width <= 1f) return Settings.OverlayOpacity;
+            float ratio = (mouseX - _opacityTrackRect.X) / _opacityTrackRect.Width;
+            if (ratio < 0f) ratio = 0f;
+            if (ratio > 1f) ratio = 1f;
+            return (int)Math.Round(ratio * 100f);
+        }
+
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (_dragOpacity)
+            {
+                int val = CalcOpacityFromX(e.X);
+                if (OpacityChanged != null) OpacityChanged(val, false);
+                return;
+            }
             if (_dragScroll)
             {
                 RectangleF tb = GetThumb();
@@ -237,7 +255,7 @@ namespace CorePulse
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (!string.IsNullOrEmpty(_hoverKey) || _hoverScroll)
+            if (!_dragOpacity && (!string.IsNullOrEmpty(_hoverKey) || _hoverScroll))
             {
                 _hoverKey = ""; _hoverPayload = null; _hoverScroll = false; Cursor = Cursors.Default; Invalidate();
             }
@@ -257,6 +275,15 @@ namespace CorePulse
             {
                 if (_zones[i].Rect.Contains(e.Location))
                 {
+                    if (_zones[i].Key == "hud_opacity_slider")
+                    {
+                        _dragOpacity = true;
+                        Capture = true;
+                        int val = CalcOpacityFromX(e.X);
+                        if (OpacityChanged != null) OpacityChanged(val, false);
+                        Invalidate();
+                        return;
+                    }
                     if (ActionInvoked != null) ActionInvoked(_zones[i].Key, _zones[i].Payload);
                     return;
                 }
@@ -266,6 +293,15 @@ namespace CorePulse
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (_dragOpacity && e.Button == MouseButtons.Left)
+            {
+                _dragOpacity = false;
+                Capture = false;
+                int val = CalcOpacityFromX(e.X);
+                if (OpacityChanged != null) OpacityChanged(val, true);
+                Invalidate();
+                return;
+            }
             if (_dragScroll) { _dragScroll = false; Capture = false; }
         }
 
@@ -957,30 +993,76 @@ namespace CorePulse
                 _fSec, ColCyan, new RectangleF(sx, sy, rightW - Sf(28f), Sf(18f)), StringAlignment.Near);
             sy += Sf(26f);
 
-            // Layout Mode: Horizontal Bar vs Compact Card
+            // Layout Mode: Horizontal Bar vs Compact Card + Border Toggle
+            float szW = (rightW - Sf(44f)) / 3f;
             float bw2 = (rightW - Sf(36f)) * 0.5f;
-            RectangleF bHor = new RectangleF(sx, sy, bw2, Sf(28f));
+            RectangleF bHor = new RectangleF(sx, sy, szW, Sf(28f));
             DrawPillBtn(g, bHor, T("Horizontal Bar", "Yatay Şerit Bar", "横向极简条"), IsHov("hud_layout", true), Settings.OverlayHorizontal, true);
             AddZone(bHor, "hud_layout", true);
-            RectangleF bVer = new RectangleF(bHor.Right + Sf(8f), sy, bw2, Sf(28f));
+            RectangleF bVer = new RectangleF(bHor.Right + Sf(8f), sy, szW, Sf(28f));
             DrawPillBtn(g, bVer, T("Compact Card", "Dikey Kart", "竖向紧凑卡片"), IsHov("hud_layout", false), !Settings.OverlayHorizontal, true);
             AddZone(bVer, "hud_layout", false);
+            RectangleF bBdr = new RectangleF(bVer.Right + Sf(8f), sy, szW, Sf(28f));
+            DrawPillBtn(g, bBdr, (Settings.OverlayBorder ? "✓ " : "○ ") + T("Border", "Kenarlık", "边框"), IsHov("hud_border", null), Settings.OverlayBorder, true);
+            AddZone(bBdr, "hud_border", null);
             sy += Sf(39f);
 
-            // Opacity pills: 65%, 80%, 90%, 100%
-            int[] opac = new int[] { 65, 80, 90, 100 };
-            float opW = (rightW - Sf(52f)) / 4f;
-            for (int i = 0; i < 4; i++)
+            // Opacity Slider: 0% - 100% continuous real-time adjustment
+            float opRowH = Sf(26f);
+            float opLblW = Sf(54f);
+            float opValW = Sf(38f);
+            float opPad = Sf(8f);
+            DrawText(g, T("Opacity", "Saydamlık", "透明度"), _fSmall, ColTextSec, new RectangleF(sx, sy, opLblW, opRowH), StringAlignment.Near);
+
+            float trackX = sx + opLblW + opPad;
+            float trackW = Math.Max(Sf(60f), rightW - Sf(28f) - opLblW - opValW - opPad * 2f);
+            float trackH = Sf(6f);
+            float trackY = sy + (opRowH - trackH) * 0.5f;
+            _opacityTrackRect = new RectangleF(trackX, trackY, trackW, trackH);
+
+            RectangleF opHit = new RectangleF(trackX - Sf(7f), sy, trackW + Sf(14f), opRowH);
+            AddZone(opHit, "hud_opacity_slider", null);
+
+            bool opActive = _dragOpacity || IsHov("hud_opacity_slider", null);
+            using (GraphicsPath tp = Rounded(_opacityTrackRect, trackH * 0.5f))
+            using (SolidBrush tb = new SolidBrush(Color.FromArgb(28, 36, 49)))
+            using (Pen tbd = new Pen(opActive ? ColCyanBd : ColBorder, 1f))
             {
-                RectangleF or = new RectangleF(sx + i * (opW + Sf(8f)), sy, opW, Sf(26f));
-                DrawPillBtn(g, or, opac[i] + "%", IsHov("hud_opacity", opac[i]), Math.Abs(Settings.OverlayOpacity - opac[i]) <= 5, true);
-                AddZone(or, "hud_opacity", opac[i]);
+                g.FillPath(tb, tp);
+                g.DrawPath(tbd, tp);
             }
+
+            float opRatio = Math.Max(0f, Math.Min(1f, Settings.OverlayOpacity / 100f));
+            float fillW = trackW * opRatio;
+            if (fillW > 1f)
+            {
+                RectangleF fillR = new RectangleF(trackX, trackY, fillW, trackH);
+                using (GraphicsPath fp = Rounded(fillR, Math.Min(trackH * 0.5f, fillW * 0.5f)))
+                using (LinearGradientBrush fb = new LinearGradientBrush(
+                    new PointF(trackX, trackY), new PointF(trackX + Math.Max(2f, fillW), trackY),
+                    ColCyan, ColEmerald))
+                {
+                    g.FillPath(fb, fp);
+                }
+            }
+
+            float knobR = opActive ? Sf(7.5f) : Sf(6.5f);
+            float knobCx = trackX + fillW;
+            float knobCy = sy + opRowH * 0.5f;
+            RectangleF knobRct = new RectangleF(knobCx - knobR, knobCy - knobR, knobR * 2f, knobR * 2f);
+            using (SolidBrush kb = new SolidBrush(Color.White))
+            using (Pen kbd = new Pen(opActive ? ColCyan : ColEmerald, Sf(2f)))
+            {
+                g.FillEllipse(kb, knobRct);
+                g.DrawEllipse(kbd, knobRct);
+            }
+
+            DrawText(g, Settings.OverlayOpacity + "%", _fBtn, opActive ? ColCyan : ColTextPrimary,
+                new RectangleF(trackX + trackW + opPad, sy, opValW, opRowH), StringAlignment.Far);
             sy += Sf(37f);
 
             // Size pills: Compact / Normal / Large
             string[] szLbl = new string[] { T("Compact", "Küçük", "紧凑"), T("Normal", "Normal", "标准"), T("Large", "Büyük", "大号") };
-            float szW = (rightW - Sf(44f)) / 3f;
             for (int i = 0; i < 3; i++)
             {
                 RectangleF sr = new RectangleF(sx + i * (szW + Sf(8f)), sy, szW, Sf(26f));
@@ -1057,6 +1139,7 @@ namespace CorePulse
             float mGap = Sf(8f);
             float mw = (availW - mGap) * 0.5f;
             float mh = Sf(36f);
+            float gearSize = Sf(24f);
             for (int i = 0; i < keys.Length; i++)
             {
                 int col = i % 2;
@@ -1064,13 +1147,32 @@ namespace CorePulse
                 RectangleF mr = new RectangleF(mx, y, mw, mh);
                 if (mr.Bottom >= -4 && mr.Top <= ClientSize.Height + 4)
                 {
-                    bool hov = IsHov("hud_metric", keys[i]);
-                    DrawBox(g, mr, Sf(8f), hov ? ColCardHover : ColCard, vals[i] ? ColEmeraldBd : (hov ? ColBorderHover : ColBorder));
+                    bool cardHov = IsHov("hud_metric", keys[i]);
+                    bool gearHov = IsHov("hud_metric_gear", keys[i]);
+                    bool hasCustom = HudSensorResolver.HasCustomSensor(Settings, keys[i]);
+
+                    DrawBox(g, mr, Sf(8f), cardHov ? ColCardHover : ColCard, vals[i] ? ColEmeraldBd : ((cardHov || gearHov) ? ColBorderHover : ColBorder));
                     AddZone(mr, "hud_metric", keys[i]);
+
                     float cb = Sf(16f);
                     DrawCheckbox(g, new RectangleF(mr.X + Sf(12f), mr.Y + (mr.Height - cb) * 0.5f, cb, cb), vals[i], ColEmerald);
+
+                    RectangleF gearRc = new RectangleF(mr.Right - gearSize - Sf(7f), mr.Y + (mr.Height - gearSize) * 0.5f, gearSize, gearSize);
+                    Color gearBg = gearHov ? ColBtnHover : (hasCustom ? ColCyanBg : ColBtnBg);
+                    Color gearBd = gearHov ? ColCyan : (hasCustom ? ColCyanBd : ColBorder);
+                    Color gearFg = (gearHov || hasCustom) ? ColCyan : ColTextSec;
+                    DrawBox(g, gearRc, Sf(6f), gearBg, gearBd);
+                    DrawGearIcon(g, gearRc, gearFg);
+                    if (hasCustom)
+                    {
+                        float dot = Sf(5f);
+                        using (SolidBrush db = new SolidBrush(ColEmerald))
+                            g.FillEllipse(db, gearRc.Right - dot - Sf(2f), gearRc.Top + Sf(2f), dot, dot);
+                    }
+                    AddZone(gearRc, "hud_metric_gear", keys[i]);
+
                     DrawText(g, titles[i], _fTitle, vals[i] ? ColTextPrimary : ColTextSec,
-                        new RectangleF(mr.X + Sf(36f), mr.Y, mr.Width - Sf(46f), mr.Height), StringAlignment.Near);
+                        new RectangleF(mr.X + Sf(36f), mr.Y, mr.Width - Sf(44f) - gearSize - Sf(8f), mr.Height), StringAlignment.Near);
                 }
                 if (col == 1 || i == keys.Length - 1) y += mh + Sf(7f);
             }
@@ -1079,6 +1181,38 @@ namespace CorePulse
         }
 
         // ==================== SHARED GDI+ HELPERS ====================
+        private static void DrawGearIcon(Graphics g, RectangleF bounds, Color col)
+        {
+            float cx = bounds.X + bounds.Width * 0.5f;
+            float cy = bounds.Y + bounds.Height * 0.5f;
+            float rOuter = Math.Min(bounds.Width, bounds.Height) * 0.30f;
+            float rInner = rOuter * 0.68f;
+            float rHole = rOuter * 0.30f;
+            int teeth = 8;
+
+            using (GraphicsPath gp = new GraphicsPath())
+            {
+                PointF[] pts = new PointF[teeth * 4];
+                double step = (Math.PI * 2.0) / teeth;
+                for (int i = 0; i < teeth; i++)
+                {
+                    double a0 = i * step;
+                    double a1 = a0 + step * 0.22;
+                    double a2 = a0 + step * 0.46;
+                    double a3 = a0 + step * 0.68;
+                    pts[i * 4 + 0] = new PointF(cx + (float)(Math.Cos(a0) * rInner), cy + (float)(Math.Sin(a0) * rInner));
+                    pts[i * 4 + 1] = new PointF(cx + (float)(Math.Cos(a1) * rOuter), cy + (float)(Math.Sin(a1) * rOuter));
+                    pts[i * 4 + 2] = new PointF(cx + (float)(Math.Cos(a2) * rOuter), cy + (float)(Math.Sin(a2) * rOuter));
+                    pts[i * 4 + 3] = new PointF(cx + (float)(Math.Cos(a3) * rInner), cy + (float)(Math.Sin(a3) * rInner));
+                }
+                gp.AddPolygon(pts);
+                gp.AddEllipse(cx - rHole, cy - rHole, rHole * 2f, rHole * 2f);
+                gp.FillMode = FillMode.Alternate;
+                using (SolidBrush b = new SolidBrush(col))
+                    g.FillPath(b, gp);
+            }
+        }
+
         private void DrawCheckbox(Graphics g, RectangleF r, bool chk, Color col)
         {
             if (chk)
@@ -1266,6 +1400,7 @@ namespace CorePulse
             _content.Engine = _engine;
             _content.Snap = _engine.Latest;
             _content.ActionInvoked += OnContentAction;
+            _content.OpacityChanged += OnOpacityChanged;
             Controls.Add(_content);
 
             if (!_cfg.DemoMode)
@@ -1631,6 +1766,24 @@ namespace CorePulse
             Invalidate();
         }
 
+        private void OnOpacityChanged(int val, bool saveNow)
+        {
+            int clamped = Math.Max(0, Math.Min(100, val));
+            bool changed = (_settings.OverlayOpacity != clamped);
+            _settings.OverlayOpacity = clamped;
+            if (saveNow)
+            {
+                RefreshHudIfVisible();
+                return;
+            }
+            if (changed)
+            {
+                if (_settings.OverlayEnabled)
+                    _hud.UpdateHud(_settings, _engine.Latest, _scale);
+                _content.Invalidate();
+            }
+        }
+
         private void OnContentAction(string key, object payload)
         {
             if (key == "elevate")
@@ -1715,7 +1868,7 @@ namespace CorePulse
             else if (key == "hud_margin_inc") { _settings.OverlayMargin = Math.Min(120, _settings.OverlayMargin + 2); _settings.OverlayCustomPos = false; RefreshHudIfVisible(); }
             else if (key == "hud_drag_toggle") SetHudDragUnlocked(!_hud.DragUnlocked);
             else if (key == "hud_layout" && payload is bool) { _settings.OverlayHorizontal = (bool)payload; RefreshHudIfVisible(); }
-            else if (key == "hud_opacity" && payload is int) { _settings.OverlayOpacity = (int)payload; RefreshHudIfVisible(); }
+            else if (key == "hud_border") { _settings.OverlayBorder = !_settings.OverlayBorder; RefreshHudIfVisible(); }
             else if (key == "hud_scale" && payload is int) { _settings.OverlayScale = (int)payload; RefreshHudIfVisible(); }
             else if (key == "hud_preset" && payload is string) { _settings.ApplyHudPreset((string)payload); RefreshHudIfVisible(); }
             else if (key == "toggle_tray")
@@ -1752,6 +1905,46 @@ namespace CorePulse
                 else if (mk == "HudShowBoardDiskTemp") _settings.HudShowBoardDiskTemp = !_settings.HudShowBoardDiskTemp;
                 else if (mk == "HudShowNetClock") _settings.HudShowNetClock = !_settings.HudShowNetClock;
                 RefreshHudIfVisible();
+            }
+            else if (key == "hud_metric_gear" && payload is string)
+            {
+                OpenSensorPicker((string)payload);
+            }
+        }
+
+        private string GetHudMetricTitle(string mk)
+        {
+            if (mk == "HudShowFps") return T("FPS & Frametime (ms)", "FPS ve Kare Süresi (ms)", "实时帧率 FPS 与帧时间");
+            if (mk == "HudShowFps1Low") return T("1% Low FPS", "%1 Low FPS", "1% Low 最低帧率");
+            if (mk == "HudShowCpuTemp") return T("CPU Temperature (°C)", "CPU Sıcaklığı (°C)", "CPU 温度 (°C)");
+            if (mk == "HudShowCpuLoad") return T("CPU Usage (%)", "CPU Kullanımı (%)", "CPU 占用率 (%)");
+            if (mk == "HudShowCpuClockPower") return T("CPU Clock (GHz) & Power (W)", "CPU Frekans (GHz) ve Güç (W)", "CPU 频率与功耗 (W)");
+            if (mk == "HudShowGpuTemp") return T("GPU Temperature (°C)", "GPU Sıcaklığı (°C)", "GPU 温度 (°C)");
+            if (mk == "HudShowGpuLoad") return T("GPU Usage (%)", "GPU Kullanımı (%)", "GPU 占用率 (%)");
+            if (mk == "HudShowGpuVram") return T("GPU VRAM Usage (GB)", "GPU VRAM Kullanımı (GB)", "GPU 显存占用 (GB)");
+            if (mk == "HudShowGpuFan") return T("GPU Fan Speed (RPM / %)", "GPU Fan Hızı (RPM / %)", "GPU 风扇转速 (RPM / %)");
+            if (mk == "HudShowGpuPower") return T("GPU Power Draw (W)", "GPU Güç Tüketimi (W)", "GPU 实时功耗 (W)");
+            if (mk == "HudShowRam") return T("RAM Usage (GB & %)", "RAM Kullanımı (GB & %)", "内存占用 (GB / %)");
+            if (mk == "HudShowCaseFans") return T("CPU / Case Fan RPM", "CPU / Kasa Fan Hızı (RPM)", "CPU / 机箱风扇转速");
+            if (mk == "HudShowBoardDiskTemp") return T("Motherboard & SSD Temp", "Anakart ve SSD Isısı", "主板与硬盘温度");
+            if (mk == "HudShowNetClock") return T("Network Up/Down & Clock", "Ağ Hızı ve Saat", "实时网速与时间");
+            return mk;
+        }
+
+        private void OpenSensorPicker(string metricKey)
+        {
+            string title = GetHudMetricTitle(metricKey);
+            using (SensorPickerForm dlg = new SensorPickerForm(
+                _settings,
+                _engine,
+                _engine.Latest,
+                metricKey,
+                title,
+                Lang,
+                _scale,
+                delegate { RefreshHudIfVisible(); }))
+            {
+                dlg.ShowDialog(this);
             }
         }
 

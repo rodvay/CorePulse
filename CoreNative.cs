@@ -75,7 +75,8 @@ namespace CorePulse
         public OverlayAnchor OverlayPosition = OverlayAnchor.TopLeft;
         public int OverlayMonitorIndex = 0; // 0 = Primary Screen, 1..N = Screen.AllScreens[idx - 1]
         public bool OverlayHorizontal = true;
-        public int OverlayOpacity = 88; // 55..100
+        public int OverlayOpacity = 88; // 0..100
+        public bool OverlayBorder = true;
         public int OverlayScale = 1;    // 0=Compact, 1=Normal, 2=Large
         public int OverlayMargin = 4;   // 0..120 (0 = flush to screen edge!)
         public bool OverlayCustomPos = false;
@@ -97,6 +98,7 @@ namespace CorePulse
         public bool HudShowCaseFans = false;
         public bool HudShowBoardDiskTemp = false;
         public bool HudShowNetClock = false;
+        public Dictionary<string, List<string>> HudCustomSensors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         // Fan Control Profile & Curve
         public FanProfileMode FanProfile = FanProfileMode.BiosAuto;
@@ -133,7 +135,8 @@ namespace CorePulse
                     else if (k == "OverlayPosition" && int.TryParse(v, out iv) && iv >= 0 && iv <= 5) s.OverlayPosition = (OverlayAnchor)iv;
                     else if (k == "OverlayMonitorIndex" && int.TryParse(v, out iv) && iv >= 0 && iv <= 16) s.OverlayMonitorIndex = iv;
                     else if (k == "OverlayHorizontal") s.OverlayHorizontal = (v == "1");
-                    else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(55, Math.Min(100, iv));
+                    else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(0, Math.Min(100, iv));
+                    else if (k == "OverlayBorder") s.OverlayBorder = (v == "1");
                     else if (k == "OverlayScale" && int.TryParse(v, out iv) && iv >= 0 && iv <= 2) s.OverlayScale = iv;
                     else if (k == "OverlayMargin" && int.TryParse(v, out iv)) s.OverlayMargin = Math.Max(0, Math.Min(120, iv));
                     else if (k == "OverlayCustomPos") s.OverlayCustomPos = (v == "1");
@@ -153,6 +156,21 @@ namespace CorePulse
                     else if (k == "HudShowCaseFans") s.HudShowCaseFans = (v == "1");
                     else if (k == "HudShowBoardDiskTemp") s.HudShowBoardDiskTemp = (v == "1");
                     else if (k == "HudShowNetClock") s.HudShowNetClock = (v == "1");
+                    else if (k.StartsWith("HudSensor|"))
+                    {
+                        string mk = k.Substring(10);
+                        if (!string.IsNullOrEmpty(mk) && !string.IsNullOrEmpty(v))
+                        {
+                            string[] items = v.Split(new string[] { ";;" }, StringSplitOptions.RemoveEmptyEntries);
+                            List<string> list = new List<string>();
+                            for (int i = 0; i < items.Length; i++)
+                            {
+                                string item = items[i].Trim();
+                                if (!string.IsNullOrEmpty(item) && !list.Contains(item)) list.Add(item);
+                            }
+                            if (list.Count > 0) s.HudCustomSensors[mk] = list;
+                        }
+                    }
                     else if (k == "FanProfile" && int.TryParse(v, out iv) && iv >= 0 && iv <= 4) s.FanProfile = (FanProfileMode)iv;
                     else if (k == "CurveFollowsGpu") s.CurveFollowsGpu = (v == "1");
                     else if (k == "CurveTemps")
@@ -198,6 +216,7 @@ namespace CorePulse
                 sb.AppendLine("OverlayMonitorIndex=" + OverlayMonitorIndex);
                 sb.AppendLine("OverlayHorizontal=" + (OverlayHorizontal ? "1" : "0"));
                 sb.AppendLine("OverlayOpacity=" + OverlayOpacity);
+                sb.AppendLine("OverlayBorder=" + (OverlayBorder ? "1" : "0"));
                 sb.AppendLine("OverlayScale=" + OverlayScale);
                 sb.AppendLine("OverlayMargin=" + OverlayMargin);
                 sb.AppendLine("OverlayCustomPos=" + (OverlayCustomPos ? "1" : "0"));
@@ -217,6 +236,11 @@ namespace CorePulse
                 sb.AppendLine("HudShowCaseFans=" + (HudShowCaseFans ? "1" : "0"));
                 sb.AppendLine("HudShowBoardDiskTemp=" + (HudShowBoardDiskTemp ? "1" : "0"));
                 sb.AppendLine("HudShowNetClock=" + (HudShowNetClock ? "1" : "0"));
+                foreach (KeyValuePair<string, List<string>> kv in HudCustomSensors)
+                {
+                    if (!string.IsNullOrEmpty(kv.Key) && kv.Value != null && kv.Value.Count > 0)
+                        sb.AppendLine("HudSensor|" + kv.Key + "=" + string.Join(";;", kv.Value.ToArray()));
+                }
                 sb.AppendLine("FanProfile=" + ((int)FanProfile));
                 sb.AppendLine("CurveFollowsGpu=" + (CurveFollowsGpu ? "1" : "0"));
                 sb.AppendLine("CurveTemps=" + Loc.F("{0},{1},{2},{3},{4}", CurveTemps[0], CurveTemps[1], CurveTemps[2], CurveTemps[3], CurveTemps[4]));
