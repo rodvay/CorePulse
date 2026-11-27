@@ -1139,6 +1139,7 @@ namespace CorePulse
             float mGap = Sf(8f);
             float mw = (availW - mGap) * 0.5f;
             float mh = Sf(36f);
+            float gearSize = Sf(24f);
             for (int i = 0; i < keys.Length; i++)
             {
                 int col = i % 2;
@@ -1146,13 +1147,32 @@ namespace CorePulse
                 RectangleF mr = new RectangleF(mx, y, mw, mh);
                 if (mr.Bottom >= -4 && mr.Top <= ClientSize.Height + 4)
                 {
-                    bool hov = IsHov("hud_metric", keys[i]);
-                    DrawBox(g, mr, Sf(8f), hov ? ColCardHover : ColCard, vals[i] ? ColEmeraldBd : (hov ? ColBorderHover : ColBorder));
+                    bool cardHov = IsHov("hud_metric", keys[i]);
+                    bool gearHov = IsHov("hud_metric_gear", keys[i]);
+                    bool hasCustom = HudSensorResolver.HasCustomSensor(Settings, keys[i]);
+
+                    DrawBox(g, mr, Sf(8f), cardHov ? ColCardHover : ColCard, vals[i] ? ColEmeraldBd : ((cardHov || gearHov) ? ColBorderHover : ColBorder));
                     AddZone(mr, "hud_metric", keys[i]);
+
                     float cb = Sf(16f);
                     DrawCheckbox(g, new RectangleF(mr.X + Sf(12f), mr.Y + (mr.Height - cb) * 0.5f, cb, cb), vals[i], ColEmerald);
+
+                    RectangleF gearRc = new RectangleF(mr.Right - gearSize - Sf(7f), mr.Y + (mr.Height - gearSize) * 0.5f, gearSize, gearSize);
+                    Color gearBg = gearHov ? ColBtnHover : (hasCustom ? ColCyanBg : ColBtnBg);
+                    Color gearBd = gearHov ? ColCyan : (hasCustom ? ColCyanBd : ColBorder);
+                    Color gearFg = (gearHov || hasCustom) ? ColCyan : ColTextSec;
+                    DrawBox(g, gearRc, Sf(6f), gearBg, gearBd);
+                    DrawGearIcon(g, gearRc, gearFg);
+                    if (hasCustom)
+                    {
+                        float dot = Sf(5f);
+                        using (SolidBrush db = new SolidBrush(ColEmerald))
+                            g.FillEllipse(db, gearRc.Right - dot - Sf(2f), gearRc.Top + Sf(2f), dot, dot);
+                    }
+                    AddZone(gearRc, "hud_metric_gear", keys[i]);
+
                     DrawText(g, titles[i], _fTitle, vals[i] ? ColTextPrimary : ColTextSec,
-                        new RectangleF(mr.X + Sf(36f), mr.Y, mr.Width - Sf(46f), mr.Height), StringAlignment.Near);
+                        new RectangleF(mr.X + Sf(36f), mr.Y, mr.Width - Sf(44f) - gearSize - Sf(8f), mr.Height), StringAlignment.Near);
                 }
                 if (col == 1 || i == keys.Length - 1) y += mh + Sf(7f);
             }
@@ -1161,6 +1181,38 @@ namespace CorePulse
         }
 
         // ==================== SHARED GDI+ HELPERS ====================
+        private static void DrawGearIcon(Graphics g, RectangleF bounds, Color col)
+        {
+            float cx = bounds.X + bounds.Width * 0.5f;
+            float cy = bounds.Y + bounds.Height * 0.5f;
+            float rOuter = Math.Min(bounds.Width, bounds.Height) * 0.30f;
+            float rInner = rOuter * 0.68f;
+            float rHole = rOuter * 0.30f;
+            int teeth = 8;
+
+            using (GraphicsPath gp = new GraphicsPath())
+            {
+                PointF[] pts = new PointF[teeth * 4];
+                double step = (Math.PI * 2.0) / teeth;
+                for (int i = 0; i < teeth; i++)
+                {
+                    double a0 = i * step;
+                    double a1 = a0 + step * 0.22;
+                    double a2 = a0 + step * 0.46;
+                    double a3 = a0 + step * 0.68;
+                    pts[i * 4 + 0] = new PointF(cx + (float)(Math.Cos(a0) * rInner), cy + (float)(Math.Sin(a0) * rInner));
+                    pts[i * 4 + 1] = new PointF(cx + (float)(Math.Cos(a1) * rOuter), cy + (float)(Math.Sin(a1) * rOuter));
+                    pts[i * 4 + 2] = new PointF(cx + (float)(Math.Cos(a2) * rOuter), cy + (float)(Math.Sin(a2) * rOuter));
+                    pts[i * 4 + 3] = new PointF(cx + (float)(Math.Cos(a3) * rInner), cy + (float)(Math.Sin(a3) * rInner));
+                }
+                gp.AddPolygon(pts);
+                gp.AddEllipse(cx - rHole, cy - rHole, rHole * 2f, rHole * 2f);
+                gp.FillMode = FillMode.Alternate;
+                using (SolidBrush b = new SolidBrush(col))
+                    g.FillPath(b, gp);
+            }
+        }
+
         private void DrawCheckbox(Graphics g, RectangleF r, bool chk, Color col)
         {
             if (chk)
@@ -1853,6 +1905,46 @@ namespace CorePulse
                 else if (mk == "HudShowBoardDiskTemp") _settings.HudShowBoardDiskTemp = !_settings.HudShowBoardDiskTemp;
                 else if (mk == "HudShowNetClock") _settings.HudShowNetClock = !_settings.HudShowNetClock;
                 RefreshHudIfVisible();
+            }
+            else if (key == "hud_metric_gear" && payload is string)
+            {
+                OpenSensorPicker((string)payload);
+            }
+        }
+
+        private string GetHudMetricTitle(string mk)
+        {
+            if (mk == "HudShowFps") return T("FPS & Frametime (ms)", "FPS ve Kare Süresi (ms)", "实时帧率 FPS 与帧时间");
+            if (mk == "HudShowFps1Low") return T("1% Low FPS", "%1 Low FPS", "1% Low 最低帧率");
+            if (mk == "HudShowCpuTemp") return T("CPU Temperature (°C)", "CPU Sıcaklığı (°C)", "CPU 温度 (°C)");
+            if (mk == "HudShowCpuLoad") return T("CPU Usage (%)", "CPU Kullanımı (%)", "CPU 占用率 (%)");
+            if (mk == "HudShowCpuClockPower") return T("CPU Clock (GHz) & Power (W)", "CPU Frekans (GHz) ve Güç (W)", "CPU 频率与功耗 (W)");
+            if (mk == "HudShowGpuTemp") return T("GPU Temperature (°C)", "GPU Sıcaklığı (°C)", "GPU 温度 (°C)");
+            if (mk == "HudShowGpuLoad") return T("GPU Usage (%)", "GPU Kullanımı (%)", "GPU 占用率 (%)");
+            if (mk == "HudShowGpuVram") return T("GPU VRAM Usage (GB)", "GPU VRAM Kullanımı (GB)", "GPU 显存占用 (GB)");
+            if (mk == "HudShowGpuFan") return T("GPU Fan Speed (RPM / %)", "GPU Fan Hızı (RPM / %)", "GPU 风扇转速 (RPM / %)");
+            if (mk == "HudShowGpuPower") return T("GPU Power Draw (W)", "GPU Güç Tüketimi (W)", "GPU 实时功耗 (W)");
+            if (mk == "HudShowRam") return T("RAM Usage (GB & %)", "RAM Kullanımı (GB & %)", "内存占用 (GB / %)");
+            if (mk == "HudShowCaseFans") return T("CPU / Case Fan RPM", "CPU / Kasa Fan Hızı (RPM)", "CPU / 机箱风扇转速");
+            if (mk == "HudShowBoardDiskTemp") return T("Motherboard & SSD Temp", "Anakart ve SSD Isısı", "主板与硬盘温度");
+            if (mk == "HudShowNetClock") return T("Network Up/Down & Clock", "Ağ Hızı ve Saat", "实时网速与时间");
+            return mk;
+        }
+
+        private void OpenSensorPicker(string metricKey)
+        {
+            string title = GetHudMetricTitle(metricKey);
+            using (SensorPickerForm dlg = new SensorPickerForm(
+                _settings,
+                _engine,
+                _engine.Latest,
+                metricKey,
+                title,
+                Lang,
+                _scale,
+                delegate { RefreshHudIfVisible(); }))
+            {
+                dlg.ShowDialog(this);
             }
         }
 

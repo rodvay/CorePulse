@@ -124,6 +124,7 @@ Write-Host "Compiling CorePulse.exe..."
     "$scriptDir\HardwareEngine.cs" `
     "$scriptDir\FanController.cs" `
     "$scriptDir\OverlayHudForm.cs" `
+    "$scriptDir\SensorPickerForm.cs" `
     "$scriptDir\Program.cs"
 
 if ($LASTEXITCODE -ne 0) { throw "Compilation failed (ExitCode=$LASTEXITCODE)" }

@@ -98,6 +98,7 @@ namespace CorePulse
         public bool HudShowCaseFans = false;
         public bool HudShowBoardDiskTemp = false;
         public bool HudShowNetClock = false;
+        public Dictionary<string, List<string>> HudCustomSensors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         // Fan Control Profile & Curve
         public FanProfileMode FanProfile = FanProfileMode.BiosAuto;
@@ -155,6 +156,21 @@ namespace CorePulse
                     else if (k == "HudShowCaseFans") s.HudShowCaseFans = (v == "1");
                     else if (k == "HudShowBoardDiskTemp") s.HudShowBoardDiskTemp = (v == "1");
                     else if (k == "HudShowNetClock") s.HudShowNetClock = (v == "1");
+                    else if (k.StartsWith("HudSensor|"))
+                    {
+                        string mk = k.Substring(10);
+                        if (!string.IsNullOrEmpty(mk) && !string.IsNullOrEmpty(v))
+                        {
+                            string[] items = v.Split(new string[] { ";;" }, StringSplitOptions.RemoveEmptyEntries);
+                            List<string> list = new List<string>();
+                            for (int i = 0; i < items.Length; i++)
+                            {
+                                string item = items[i].Trim();
+                                if (!string.IsNullOrEmpty(item) && !list.Contains(item)) list.Add(item);
+                            }
+                            if (list.Count > 0) s.HudCustomSensors[mk] = list;
+                        }
+                    }
                     else if (k == "FanProfile" && int.TryParse(v, out iv) && iv >= 0 && iv <= 4) s.FanProfile = (FanProfileMode)iv;
                     else if (k == "CurveFollowsGpu") s.CurveFollowsGpu = (v == "1");
                     else if (k == "CurveTemps")
@@ -220,6 +236,11 @@ namespace CorePulse
                 sb.AppendLine("HudShowCaseFans=" + (HudShowCaseFans ? "1" : "0"));
                 sb.AppendLine("HudShowBoardDiskTemp=" + (HudShowBoardDiskTemp ? "1" : "0"));
                 sb.AppendLine("HudShowNetClock=" + (HudShowNetClock ? "1" : "0"));
+                foreach (KeyValuePair<string, List<string>> kv in HudCustomSensors)
+                {
+                    if (!string.IsNullOrEmpty(kv.Key) && kv.Value != null && kv.Value.Count > 0)
+                        sb.AppendLine("HudSensor|" + kv.Key + "=" + string.Join(";;", kv.Value.ToArray()));
+                }
                 sb.AppendLine("FanProfile=" + ((int)FanProfile));
                 sb.AppendLine("CurveFollowsGpu=" + (CurveFollowsGpu ? "1" : "0"));
                 sb.AppendLine("CurveTemps=" + Loc.F("{0},{1},{2},{3},{4}", CurveTemps[0], CurveTemps[1], CurveTemps[2], CurveTemps[3], CurveTemps[4]));
