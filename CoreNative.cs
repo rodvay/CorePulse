@@ -75,7 +75,8 @@ namespace CorePulse
         public OverlayAnchor OverlayPosition = OverlayAnchor.TopLeft;
         public int OverlayMonitorIndex = 0; // 0 = Primary Screen, 1..N = Screen.AllScreens[idx - 1]
         public bool OverlayHorizontal = true;
-        public int OverlayOpacity = 88; // 55..100
+        public int OverlayOpacity = 88; // 0..100
+        public bool OverlayBorder = true;
         public int OverlayScale = 1;    // 0=Compact, 1=Normal, 2=Large
         public int OverlayMargin = 4;   // 0..120 (0 = flush to screen edge!)
         public bool OverlayCustomPos = false;
@@ -133,7 +134,8 @@ namespace CorePulse
                     else if (k == "OverlayPosition" && int.TryParse(v, out iv) && iv >= 0 && iv <= 5) s.OverlayPosition = (OverlayAnchor)iv;
                     else if (k == "OverlayMonitorIndex" && int.TryParse(v, out iv) && iv >= 0 && iv <= 16) s.OverlayMonitorIndex = iv;
                     else if (k == "OverlayHorizontal") s.OverlayHorizontal = (v == "1");
-                    else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(55, Math.Min(100, iv));
+                    else if (k == "OverlayOpacity" && int.TryParse(v, out iv)) s.OverlayOpacity = Math.Max(0, Math.Min(100, iv));
+                    else if (k == "OverlayBorder") s.OverlayBorder = (v == "1");
                     else if (k == "OverlayScale" && int.TryParse(v, out iv) && iv >= 0 && iv <= 2) s.OverlayScale = iv;
                     else if (k == "OverlayMargin" && int.TryParse(v, out iv)) s.OverlayMargin = Math.Max(0, Math.Min(120, iv));
                     else if (k == "OverlayCustomPos") s.OverlayCustomPos = (v == "1");
@@ -198,6 +200,7 @@ namespace CorePulse
                 sb.AppendLine("OverlayMonitorIndex=" + OverlayMonitorIndex);
                 sb.AppendLine("OverlayHorizontal=" + (OverlayHorizontal ? "1" : "0"));
                 sb.AppendLine("OverlayOpacity=" + OverlayOpacity);
+                sb.AppendLine("OverlayBorder=" + (OverlayBorder ? "1" : "0"));
                 sb.AppendLine("OverlayScale=" + OverlayScale);
                 sb.AppendLine("OverlayMargin=" + OverlayMargin);
                 sb.AppendLine("OverlayCustomPos=" + (OverlayCustomPos ? "1" : "0"));

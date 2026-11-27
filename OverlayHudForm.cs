@@ -452,19 +452,26 @@ namespace CorePulse
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     g.Clear(Color.Transparent);
 
-                    int bgAlpha = Math.Max(130, Math.Min(245, (int)Math.Round((c.OverlayOpacity / 100.0) * 238.0)));
-                    int bdAlpha = Math.Max(160, Math.Min(255, bgAlpha + 20));
+                    int clampedOp = Math.Max(0, Math.Min(100, c.OverlayOpacity));
+                    int bgAlpha = (int)Math.Round((clampedOp / 100.0) * 245.0);
+                    int bdAlpha = bgAlpha == 0 ? 175 : Math.Min(255, bgAlpha + 30);
                     RectangleF rc = new RectangleF(0.5f, 0.5f, w - 1.5f, h - 1.5f);
                     float rad = (c.OverlayHorizontal ? 9f : 10f) * sf;
 
-                    Color borderCol = dragUnlocked ? Color.FromArgb(255, ColCyan) : Color.FromArgb(bdAlpha, ColHudBorder);
-                    float borderW = dragUnlocked ? 2.0f : 1.2f;
                     using (GraphicsPath gp = Rounded(rc, rad))
-                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
-                    using (Pen bd = new Pen(borderCol, borderW))
                     {
-                        g.FillPath(bg, gp);
-                        g.DrawPath(bd, gp);
+                        if (bgAlpha > 0)
+                        {
+                            using (SolidBrush bg = new SolidBrush(Color.FromArgb(bgAlpha, ColHudBgBase)))
+                                g.FillPath(bg, gp);
+                        }
+                        if (dragUnlocked || c.OverlayBorder)
+                        {
+                            Color borderCol = dragUnlocked ? Color.FromArgb(255, ColCyan) : Color.FromArgb(bdAlpha, ColHudBorder);
+                            float borderW = dragUnlocked ? 2.0f : 1.2f;
+                            using (Pen bd = new Pen(borderCol, borderW))
+                                g.DrawPath(bd, gp);
+                        }
                     }
 
                     if (c.OverlayHorizontal)
